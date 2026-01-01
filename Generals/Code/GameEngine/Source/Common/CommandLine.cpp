@@ -985,47 +985,10 @@ Int parseClearDebugLevel(char *args[], int num) {
 }
 #endif
 
-Int parseTest(char *args[], int num) {
-  // Ensure we are fresh
-  DjLog_Clear();
-
-  char cwd[MAX_PATH];
-  GetCurrentDirectory(MAX_PATH, cwd);
-  char msg[1024];
-  snprintf(msg, 1024, "CWD: %s\nCheck d:\\djcc.txt", cwd);
-
-  DjLog("TEST PARAMETER DETECTED: Verifying logging functionality...");
-  DjLog("If you can see this, logging is WORKING.");
-  DjLog("Current Working Directory: %s", cwd);
-
-  // Force all file buffers to flush
-  fflush(NULL);
-
-  // Give time for file system to complete writes
-  Sleep(500);
-
-  MessageBox(NULL, msg, "Generals Test - CWD", MB_OK);
-
-  // Give visual feedback
-  MessageBox(
-      NULL,
-      "Test logging performed.\nPlease check d:\\djcc.txt or c:\\djcc.txt.",
-      "Generals Test", MB_OK);
-
-  // Final flush before exit
-  fflush(NULL);
-  Sleep(100);
-
-  exit(0);
-  return 1;
-}
-
 // Initial Params are parsed before Windows Creation.
 // Note that except for TheGlobalData, no other global objects exist yet when
 // these are parsed.
 static CommandLineParam paramsForStartup[] = {
-    {"--test", parseTest},
-    {"-test", parseTest},
     {"-win", parseWin},
     {"-fullscreen", parseNoWin},
 

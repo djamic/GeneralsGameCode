@@ -985,29 +985,10 @@ Int parseClearDebugLevel(char *args[], int num) {
 }
 #endif
 
-Int parseTest(char *args[], int num) {
-  // Ensure we are fresh
-  DjLog_Clear();
-
-  DjLog("TEST PARAMETER DETECTED: Verifying logging functionality...");
-  DjLog("If you can see this, logging is WORKING.");
-
-  // Give visual feedback
-  MessageBox(
-      NULL,
-      "Test logging performed.\nPlease check d:\\djcc.txt or c:\\djcc.txt.",
-      "Generals Test", MB_OK);
-
-  exit(0);
-  return 1;
-}
-
 // Initial Params are parsed before Windows Creation.
 // Note that except for TheGlobalData, no other global objects exist yet when
 // these are parsed.
 static CommandLineParam paramsForStartup[] = {
-    {"--test", parseTest},
-    {"-test", parseTest},
     {"-win", parseWin},
     {"-fullscreen", parseNoWin},
 
