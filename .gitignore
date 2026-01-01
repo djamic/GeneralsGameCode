@@ -33,7 +33,16 @@ CPackSourceConfig.cmake
 .cproject
 .project
 *~
-!*.exe
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.ilk
+Output/
+build.bat
+*.log
+build_log*.txt
 *.lastbuildstate
 *.unsuccessfulbuild
 *.tlog
