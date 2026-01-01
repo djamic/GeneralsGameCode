@@ -38,7 +38,7 @@ AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
         p->getPlayerDisplayName().str());
 }
 
-// AICoopPlayer::~AICoopPlayer() {}
+AICoopPlayer::~AICoopPlayer() {}
 
 void AICoopPlayer::update() {
   DjLog("AICoopPlayer::update - Frame %d", TheGameLogic->getFrame());
