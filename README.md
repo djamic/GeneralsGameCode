@@ -78,7 +78,7 @@ If you encounter issues or crashes, the game is configured to output diagnostic 
 ## 📜 Credits
 
 *   **Original Source Code Restoration:** [Thyme / TheSuperHackers](https://github.com/TheSuperHackers/GeneralsGameCode)
-*   **AI Assist Feature & Hybrid Logic:** Developed by [Your Name/User]
+*   **AI Assist Feature & Hybrid Logic:** Developed by [djamic]
 *   **Original Game:** EA Pacific / Electronic Arts
 
 
