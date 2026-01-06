@@ -62,7 +62,6 @@
 #include "Common/XferDeepCRC.h"
 #include "GameClient/Water.h"
 
-
 #include "GameClient/CampaignManager.h"
 #include "GameClient/ControlBar.h"
 #include "GameClient/Drawable.h"
@@ -76,7 +75,6 @@
 #include "GameClient/Mouse.h"
 #include "GameClient/ParticleSys.h"
 #include "GameClient/View.h"
-
 
 #include "GameLogic/AI.h"
 #include "GameLogic/AIPathfind.h"
@@ -100,7 +98,6 @@
 #include "GameLogic/SidesList.h"
 #include "GameLogic/VictoryConditions.h"
 #include "GameLogic/Weapon.h"
-
 
 #include "Common/DataChunk.h"
 #include "GameLogic/Scripts.h"
@@ -137,6 +134,7 @@ GameLogic *TheGameLogic = NULL;
 // Global logging control
 bool g_enableDjLog = true;
 int g_djLogLineCount = 0;
+bool g_djLogReset = false;
 
 static void findAndSelectCommandCenter(Object *obj, void *alreadyFound);
 
@@ -1228,8 +1226,9 @@ void GameLogic::startNewGame(Bool saveGame) {
           TheMultiplayerSettings->getColor(slot->getColor())->getNightColor());
       d.setInt(TheKey_multiplayerStartIndex, slot->getStartPos());
       //			d.setBool(TheKey_multiplayerIsLocal,
-      //slot->isLocalPlayer()); 			d.setBool(TheKey_multiplayerIsLocal,
-      //slot->getIP() == game->getLocalIP());
+      // slot->isLocalPlayer());
+      // d.setBool(TheKey_multiplayerIsLocal, slot->getIP() ==
+      // game->getLocalIP());
       d.setBool(TheKey_multiplayerIsLocal,
                 slot->isHuman() &&
                     (slot->getName().compare(

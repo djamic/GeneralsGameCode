@@ -827,6 +827,7 @@ set(GAMEENGINE_SRC
 #    Source/GameClient/View.cpp
 #    Source/GameClient/Water.cpp
     Source/GameLogic/AI/AI.cpp
+    Source/GameLogic/AI/AICoopPlayer.cpp
     Source/GameLogic/AI/AIDock.cpp
     Source/GameLogic/AI/AIGroup.cpp
     Source/GameLogic/AI/AIGuard.cpp

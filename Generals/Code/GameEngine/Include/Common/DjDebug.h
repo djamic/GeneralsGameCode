@@ -12,12 +12,26 @@
 extern bool g_enableDjLog;
 
 // Maximum lines to write (prevents disk overflow)
-#define DJ_LOG_MAX_LINES 10000
+#define DJ_LOG_MAX_LINES 100000
 extern int g_djLogLineCount; // Defined in GameLogic.cpp
+extern bool g_djLogReset;    // Defined in GameLogic.cpp or similar
 
 static void DjLog(const char *format, ...) {
   if (!g_enableDjLog)
     return;
+
+  // One-time log clearing
+  if (!g_djLogReset) {
+    const char *path = "d:\\djcc.txt";
+    FILE *f = fopen(path, "w");
+    if (f) {
+      // Reset file is empty now
+      fclose(f);
+    }
+    g_djLogLineCount = 0;
+    g_djLogReset = true;
+  }
+
   if (g_djLogLineCount >= DJ_LOG_MAX_LINES)
     return;
 
@@ -35,21 +49,15 @@ static void DjLog(const char *format, ...) {
   OutputDebugString("\n");
 
   // Try writing to multiple paths
-  const char *paths[] = {"d:\\djcc.txt", "djcc.txt", "c:\\djcc.txt",
-                         "c:\\Users\\Public\\djcc.txt"};
+  const char *path = "d:\\djcc.txt";
 
-  FILE *f = NULL;
+  FILE *f = fopen(path, "a");
 
-  for (int i = 0; i < 4; i++) {
-    f = fopen(paths[i], "a");
-    if (f)
-      break;
-    else {
-      // Diagnostic: why did it fail?
-      char errBuf[256];
-      snprintf(errBuf, 256, "DjLog: Failed to open %s\n", paths[i]);
-      OutputDebugString(errBuf);
-    }
+  if (!f) {
+    // Diagnostic: why did it fail?
+    char errBuf[256];
+    snprintf(errBuf, 256, "DjLog: Failed to open %s\n", path);
+    OutputDebugString(errBuf);
   }
 
   if (!f) {
@@ -70,15 +78,12 @@ static void DjLog(const char *format, ...) {
 
     // Log when limit reached
     if (g_djLogLineCount >= DJ_LOG_MAX_LINES) {
-      for (int i = 0; i < 4; i++) {
-        FILE *fLimit = fopen(paths[i], "a");
-        if (fLimit) {
-          fprintf(fLimit,
-                  "\n### LOG LIMIT REACHED (%d lines) - LOGGING STOPPED ###\n",
-                  DJ_LOG_MAX_LINES);
-          fclose(fLimit);
-          break;
-        }
+      FILE *fLimit = fopen(path, "a");
+      if (fLimit) {
+        fprintf(fLimit,
+                "\n### LOG LIMIT REACHED (%d lines) - LOGGING STOPPED ###\n",
+                DJ_LOG_MAX_LINES);
+        fclose(fLimit);
       }
     }
   }
@@ -89,14 +94,11 @@ static void DjLog(const char *format, ...) {
 static void DjLog_Clear() {
   // Reset logs
   // Reset logs
-  const char *paths[] = {"d:\\djcc.txt", "djcc.txt", "c:\\djcc.txt",
-                         "c:\\Users\\Public\\djcc.txt"};
-  for (int i = 0; i < 4; i++) {
-    FILE *f = fopen(paths[i], "w");
-    if (f) {
-      fflush(f);
-      fclose(f);
-    }
+  const char *path = "d:\\djcc.txt";
+  FILE *f = fopen(path, "w");
+  if (f) {
+    fflush(f);
+    fclose(f);
   }
   g_djLogLineCount = 0;
 

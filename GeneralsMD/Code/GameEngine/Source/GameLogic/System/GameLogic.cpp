@@ -35,6 +35,7 @@
 #include "Common/AudioHandleSpecialValues.h"
 #include "Common/BuildAssistant.h"
 #include "Common/CRCDebug.h"
+#include "Common/DjDebug.h"
 #include "Common/FramePacer.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
@@ -65,7 +66,6 @@
 #include "GameClient/Snow.h"
 #include "GameClient/Water.h"
 
-
 #include "GameClient/CampaignManager.h"
 #include "GameClient/ControlBar.h"
 #include "GameClient/Drawable.h"
@@ -80,7 +80,6 @@
 #include "GameClient/ParticleSys.h"
 #include "GameClient/TerrainVisual.h"
 #include "GameClient/View.h"
-
 
 #include "GameLogic/AI.h"
 #include "GameLogic/AIPathfind.h"
@@ -105,7 +104,6 @@
 #include "GameLogic/VictoryConditions.h"
 #include "GameLogic/Weapon.h"
 
-
 #include "Common/DataChunk.h"
 #include "GameLogic/Scripts.h"
 
@@ -115,7 +113,6 @@
 #include "GameNetwork/GameSpy/ThreadUtils.h"
 #include "GameNetwork/LANAPICallbacks.h"
 #include "GameNetwork/NetworkInterface.h"
-
 
 #include <rts/profile.h>
 
@@ -144,8 +141,9 @@ enum { OBJ_HASH_SIZE = 8192 };
 /// The GameLogic singleton instance
 GameLogic *TheGameLogic = NULL;
 
-bool g_enableDjLog = true;
+bool g_enableDjLog = true; // Use this to toggle logging
 int g_djLogLineCount = 0;
+bool g_djLogReset = false; // Flag to reset log once
 
 static void findAndSelectCommandCenter(Object *obj, void *alreadyFound);
 
@@ -1106,6 +1104,11 @@ void GameLogic::startNewGame(Bool loadingSaveGame) {
 
   setLoadingMap(TRUE);
 
+  if (m_gameMode == 1) {  // GAME_LAN / Skirmish
+    g_djLogReset = false; // Force log clear
+  }
+  DjLog("GameLogic::init - Initialization started. GameMode: %d", m_gameMode);
+
   if (loadingSaveGame == FALSE) {
 
     // record pristine map name when we're loading from the map (not a save
@@ -1131,6 +1134,7 @@ void GameLogic::startNewGame(Bool loadingSaveGame) {
       // Failing that, we just set the flag so the actual game can start from a
       // uniform entry point (startNewGame() called from update()).
       if (m_gameMode == GAME_SINGLE_PLAYER) {
+        DjLog("GameLogic::init - Starting Single Player Game");
 
         if (m_background) {
           m_background->destroyWindows();
@@ -1265,6 +1269,7 @@ void GameLogic::startNewGame(Bool loadingSaveGame) {
   loadMapINI(TheGlobalData->m_mapName);
 
   // load a map
+  DjLog("GameLogic::init - Loading Map: %s", TheGlobalData->m_mapName.str());
   TheTerrainLogic->loadMap(TheGlobalData->m_mapName, false);
   // anytime the world's size changes, must reset the partition mgr
   // ThePartitionManager->init();
@@ -1387,8 +1392,9 @@ void GameLogic::startNewGame(Bool loadingSaveGame) {
           TheMultiplayerSettings->getColor(slot->getColor())->getNightColor());
       d.setInt(TheKey_multiplayerStartIndex, slot->getStartPos());
       //			d.setBool(TheKey_multiplayerIsLocal,
-      //slot->isLocalPlayer()); 			d.setBool(TheKey_multiplayerIsLocal,
-      //slot->getIP() == game->getLocalIP());
+      // slot->isLocalPlayer());
+      // d.setBool(TheKey_multiplayerIsLocal, slot->getIP() ==
+      // game->getLocalIP());
       d.setBool(TheKey_multiplayerIsLocal,
                 slot->isHuman() &&
                     (slot->getName().compare(
@@ -3127,7 +3133,7 @@ static void unitTimings(void) {
         ((double)(endTime64 - startTime64) / (double)(freq64));
 
     //		Real timeToUpdateMicrosec = timeToUpdate*1E6/(TIME_FRAMES *
-    //TOTAL_UNITS);
+    // TOTAL_UNITS);
     timeToUpdate *= 100.0f / TIME_FRAMES;
 
     if (mode == LOGIC) {
@@ -3421,29 +3427,33 @@ static void unitTimings(void) {
         continue;
 
       //			if (btt->getName() endsWith("EMPPulseBomb"))
-      //continue; // 100 overloads system. 			if (btt->getName()
-      //endsWith("GLAAngryMobRockProjectileObject")) continue; // 100 overloads
-      //system. 			if (btt->getName() endsWith("ClusterMinesBomb")) continue; //
-      //100 overloads system. 			if (btt->getName()
-      //endsWith("BlackNapalmFirestormSmall")) continue; // 100 overloads
-      //system. 			if (btt->getName() endsWith("CabooseFullOfTerrorists"))
-      //continue; // 100 overloads system. 			if (btt->getName()
-      //endsWith("GLAAngryMobMolotovCocktailProjectileObject")) continue; // 100
-      //overloads system. 			if (btt->getName().startsWith("Firestorm"))
-      //continue;	// 100 crashes 			if
-      //(btt->getName().startsWith("Avalanche"))	continue;	// 100
-      //crashes 			if (btt->getName().startsWith("InfernoTankShell"))
-      //continue;	// 100 crashes
+      // continue; // 100 overloads system. 			if
+      // (btt->getName() endsWith("GLAAngryMobRockProjectileObject")) continue;
+      // // 100 overloads system. 			if (btt->getName()
+      // endsWith("ClusterMinesBomb")) continue; // 100 overloads system.
+      // if (btt->getName() endsWith("BlackNapalmFirestormSmall")) continue; //
+      // 100 overloads system. 			if (btt->getName()
+      // endsWith("CabooseFullOfTerrorists")) continue; // 100 overloads system.
+      // if (btt->getName()
+      // endsWith("GLAAngryMobMolotovCocktailProjectileObject")) continue; //
+      // 100 overloads system. 			if
+      // (btt->getName().startsWith("Firestorm")) continue;	// 100 crashes
+      // if (btt->getName().startsWith("Avalanche"))	continue;	// 100
+      // crashes 			if
+      // (btt->getName().startsWith("InfernoTankShell")) continue;	// 100
+      // crashes
       //
       //			if (btt->getName()
-      //endsWith("ChinaArtilleryBarrageShell") continue; // 100 takes really,
-      //freaking long. Doesn't crash jba. 			if (btt->getName()
-      //endsWith("ChinaTankOverlordBattleBunker") continue; // 100 seems to hang
-      //gth. 			if (btt->getName() endsWith("ChinaTankOverlordPropagandaTower")
-      //continue; // 100 seems to hang gth. 			if (btt->getName()
-      //endsWith("ChinaTankOverlordGattlingCannon") continue; // 100 seems to
-      //hang gth. 			if (btt->getName().startsWith("CINE")) continue; 			if
-      //(btt->getName() endsWith("GLAInfantryAngryMobNexus") continue;
+      // endsWith("ChinaArtilleryBarrageShell") continue; // 100 takes really,
+      // freaking long. Doesn't crash jba. 			if
+      // (btt->getName() endsWith("ChinaTankOverlordBattleBunker") continue; //
+      // 100 seems to hang gth. 			if (btt->getName()
+      // endsWith("ChinaTankOverlordPropagandaTower") continue; // 100 seems to
+      // hang gth. 			if (btt->getName()
+      // endsWith("ChinaTankOverlordGattlingCannon") continue; // 100 seems to
+      // hang gth. 			if (btt->getName().startsWith("CINE"))
+      // continue; 			if (btt->getName()
+      // endsWith("GLAInfantryAngryMobNexus") continue;
       //
       //      //missiondisk perps
       //
