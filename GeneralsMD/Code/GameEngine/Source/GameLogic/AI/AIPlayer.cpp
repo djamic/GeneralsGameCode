@@ -33,6 +33,7 @@
 // ///////////////////////////////////////////////////////////////////////////////////////
 #include "GameLogic/AIPlayer.h"
 #include "Common/BuildAssistant.h"
+#include "Common/DjDebug.h" // Add Debug Header
 #include "Common/GameMemory.h"
 #include "Common/GameState.h"
 #include "Common/GlobalData.h"
@@ -548,18 +549,28 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
   // Check available funds.
   Money *money = m_player->getMoney();
   if (money->countMoney() < bldgPlan->calcCostToBuild(m_player)) {
+    DjLog("AIPlayer::buildStructureWithDozer - FAIL: Not enough money to "
+          "build %s. Have: %d, Need: %d",
+          bldgPlan->getName().str(), money->countMoney(),
+          bldgPlan->calcCostToBuild(m_player));
     return NULL;
   }
   // construct the building
   Coord3D pos = *info->getLocation();
   pos.z += TheTerrainLogic->getGroundHeight(pos.x, pos.y);
   if (!dozer->getAIUpdateInterface()) {
+    DjLog("AIPlayer::buildStructureWithDozer - FAIL: Dozer %d has no "
+          "AIUpdateInterface",
+          dozer->getID());
     return NULL;
   }
   Real angle = info->getAngle();
   if (TheBuildAssistant->isLocationLegalToBuild(
           &pos, bldgPlan, angle, BuildAssistant::NO_ENEMY_OBJECT_OVERLAP, dozer,
           m_player) != LBC_OK) {
+    DjLog("AIPlayer::buildStructureWithDozer - FAIL: Location illegal (Enemy "
+          "Overlap) for %s at %f,%f",
+          bldgPlan->getName().str(), pos.x, pos.y);
     // If there's enemy units or structures, don't build/rebuild.
     TheTerrainVisual->removeAllBibs(); // isLocationLegalToBuild adds bib
                                        // feedback, turn it off.  jba.
@@ -577,6 +588,9 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
     bldgName.concat(
         " - Dozer unable to place.  Attempting to adjust position.");
     TheScriptEngine->AppendDebugMessage(bldgName, false);
+    DjLog("AIPlayer::buildStructureWithDozer - Initial placement failed for "
+          "%s. Attempting to wiggle...",
+          bldgName.str());
     // try to fix.
     Real posOffset;
     Bool valid = false;
@@ -588,9 +602,8 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
     Coord3D newPos = pos;
     for (posOffset = 0; posOffset < limit;
          posOffset += 2 * PATHFIND_CELL_SIZE_F) {
-      if (isSkirmishAI()) {
+      if (isSkirmishAI())
         posOffset += 2 * PATHFIND_CELL_SIZE_F;
-      }
       Real offset = posOffset / 2;
       Real xPos, yPos;
       yPos = pos.y - offset;
@@ -652,8 +665,18 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
               &pos, bldgPlan, angle, BuildAssistant::NO_ENEMY_OBJECT_OVERLAP,
               dozer, m_player) == LBC_OK;
       if (!valid) {
+        DjLog("AIPlayer::buildStructureWithDozer - FAIL: Wiggle search failed "
+              "for %s. Could not find valid spot.",
+              bldgPlan->getName().str());
         return NULL;
+      } else {
+        DjLog("AIPlayer::buildStructureWithDozer - WARNING: Wiggle failed but "
+              "location deemed legal by fallback for %s??",
+              bldgPlan->getName().str());
       }
+    } else {
+      DjLog("AIPlayer::buildStructureWithDozer - Wiggle SUCCESS for %s",
+            bldgPlan->getName().str());
     }
   }
 
@@ -669,6 +692,12 @@ Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
 
   Object *bldg =
       TheBuildAssistant->buildObjectNow(dozer, bldgPlan, &pos, angle, m_player);
+
+  if (!bldg) {
+    DjLog("AIPlayer::buildStructureWithDozer - FAIL: "
+          "BuildAssistant->buildObjectNow returned NULL for %s",
+          bldgPlan->getName().str());
+  }
 
 #if defined(RTS_DEBUG)
   if (TheGlobalData->m_debugAI == AI_DEBUG_PATHS) {
@@ -2846,8 +2875,13 @@ void AIPlayer::doBaseBuilding(void) {
   if (m_player->getCanBuildBase()) {
     // See if we are ready to start trying a structure.
     if (!m_readyToBuildStructure) {
+      if (TheGameLogic->getFrame() % 150 == 0) {
+        DjLog("AIPlayer::doBaseBuilding - Waiting... Timer: %d",
+              m_structureTimer);
+      }
       m_structureTimer--;
       if (m_structureTimer <= 0) {
+        DjLog("AIPlayer::doBaseBuilding - Ready to build! Resetting timer.");
         m_readyToBuildStructure = true;
         m_buildDelay = 0;
       }
@@ -2864,6 +2898,11 @@ void AIPlayer::doBaseBuilding(void) {
         m_buildDelay = 2 * LOGICFRAMES_PER_SECOND; // check again in 2 seconds.
       }
       // Note that this timer gets shortcut when a building is completed.
+    }
+  } else {
+    if (TheGameLogic->getFrame() % 300 == 0) {
+      DjLog("AIPlayer::doBaseBuilding - Cannot build base (getCanBuildBase is "
+            "false)");
     }
   }
 }
@@ -3361,14 +3400,13 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
 
     Player *owner = obj->getControllingPlayer();
     if (owner == m_player) {
-      // See if it's a dozer.
       if (obj->isKindOf(KINDOF_DOZER)) {
-        // DjLog("  Found candidate dozer: %s (ID: %d)", obj->getTemplateName(),
-        // obj->getID());
+        DjLog("AIPlayer::findDozer - Found candidate dozer: ID: %d",
+              obj->getID());
 
         AIUpdateInterface *ai = obj->getAIUpdateInterface();
         if (ai == NULL) {
-          // DjLog("    REJECT: No AIUpdateInterface");
+          DjLog("AIPlayer::findDozer - REJECT: No AIUpdateInterface");
           continue;
         }
 
@@ -3381,17 +3419,17 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
             // If it is gathering supplies, don't steal it.
             if (supplyTruckAI->isCurrentlyFerryingSupplies() ||
                 supplyTruckAI->isForcedIntoWantingState()) {
-              // DjLog("    REJECT: Busy ferrying supplies");
+              DjLog("AIPlayer::findDozer - REJECT: Busy ferrying supplies");
               continue;
             }
           }
           if (obj->getID() == m_repairDozer) {
-            // DjLog("    REJECT: Is repair dozer");
+            DjLog("AIPlayer::findDozer - REJECT: Is repair dozer");
             continue; // don't steal the repair dozer.
           }
           needDozer = false; // dozer exists, may be busy.
           if (dozerAI->isTaskPending(DOZER_TASK_BUILD)) {
-            // DjLog("    REJECT: Task pending (BUILD)");
+            DjLog("AIPlayer::findDozer - REJECT: Task pending (BUILD)");
             continue; // already building.
           }
           if (!dozerAI->isAnyTaskPending()) {
@@ -3416,7 +3454,7 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
             }
           }
         } else {
-          // DjLog("    REJECT: No DozerAIInterface");
+          DjLog("AIPlayer::findDozer - REJECT: No DozerAIInterface");
         }
       }
     }
