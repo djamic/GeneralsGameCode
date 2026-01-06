@@ -68,3 +68,17 @@ To run this modified version, you need a legit copy of **Command & Conquer: Gene
     *   **Replace** the existing files when prompted.
 4.  **Run:** Launch the game using the newly replaced `generalszh.exe` (or launch via Steam if you replaced the steam executable).
 
+## 🐞 Debugging & Logging
+
+If you encounter issues or crashes, the game is configured to output diagnostic logs.
+*   **Log File Location:** `d:\djcc.txt` (Hardcoded for this environment)
+*   **Contents:** Contains detailed info about AI decisions, Team Loading status, and building priority checks.
+*   **Use Case:** Share this file when reporting bugs related to AI Assist or Dozers.
+
+## 📜 Credits
+
+*   **Original Source Code Restoration:** [Thyme / TheSuperHackers](https://github.com/TheSuperHackers/GeneralsGameCode)
+*   **AI Assist Feature & Hybrid Logic:** Developed by [Your Name/User]
+*   **Original Game:** EA Pacific / Electronic Arts
+
+
