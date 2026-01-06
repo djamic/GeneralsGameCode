@@ -1,91 +1,70 @@
-[![GitHub Release](https://img.shields.io/github/v/release/TheSuperHackers/GeneralsGameCode?include_prereleases&sort=date&display_name=tag&style=flat&label=Release)](https://github.com/TheSuperHackers/GeneralsGameCode/releases)
-![GitHub milestone details](https://img.shields.io/github/milestones/progress-percent/TheSuperHackers/GeneralsGameCode/3)
-![GitHub milestone details](https://img.shields.io/github/milestones/progress-percent/TheSuperHackers/GeneralsGameCode/1)
-![GitHub milestone details](https://img.shields.io/github/milestones/progress-percent/TheSuperHackers/GeneralsGameCode/4)
-![GitHub milestone details](https://img.shields.io/github/milestones/progress-percent/TheSuperHackers/GeneralsGameCode/5)
-![GitHub milestone details](https://img.shields.io/github/milestones/progress-percent/TheSuperHackers/GeneralsGameCode/6)
+# C&C Generals Zero Hour: Source Code Modification
 
-[![GitHub issues by-label](https://img.shields.io/github/issues/TheSuperHackers/GeneralsGameCode/bug?style=flat&label=Bug%20Issues&labelColor=%23c4c4c4&color=%23424242)](https://github.com/TheSuperHackers/GeneralsGameCode/issues?q=label%3ABug)
-[![GitHub issues by-label](https://img.shields.io/github/issues/TheSuperHackers/GeneralsGameCode/enhancement?style=flat&label=Enhancement%20Issues&labelColor=%23c4c4c4&color=%23424242)](https://github.com/TheSuperHackers/GeneralsGameCode/issues?q=label%3AEnhancement)
-[![GitHub issues by-label](https://img.shields.io/github/issues/TheSuperHackers/GeneralsGameCode/major?style=flat&label=Major%20Issues&labelColor=%23c4c4c4&color=%23424242)](https://github.com/TheSuperHackers/GeneralsGameCode/issues?q=label%3AMajor)
-[![GitHub issues by-label](https://img.shields.io/github/issues/TheSuperHackers/GeneralsGameCode/critical?style=flat&label=Critical%20Issues&labelColor=%23c4c4c4&color=%23424242)](https://github.com/TheSuperHackers/GeneralsGameCode/issues?q=label%3ACritical)
-[![GitHub issues by-label](https://img.shields.io/github/issues/TheSuperHackers/GeneralsGameCode/blocker?style=flat&label=Blocker%20Issues&labelColor=%23c4c4c4&color=%23424242)](https://github.com/TheSuperHackers/GeneralsGameCode/issues?q=label%3ABlocker)
+This project represents a modified version of the **Command & Conquer: Generals Zero Hour** game engine source code. It includes fixes, modernizations, and new gameplay features.
 
-# Welcome to the Generals Game Code Project
+## 🚀 Key Feature: AI Assist (Co-op AI)
 
-GeneralsGameCode is a community-driven project aimed at fixing and improving the classic RTS game, *Command &
-Conquer: Generals* and its expansion *Zero Hour*. This repository contains the source code for both games, with a
-primary focus on *Zero Hour*.
+A robust "AI Assist" mode has been implemented, allowing the AI to take control of the human player's base and operations. This is designed for co-op gameplay, testing, or simply watching the AI manage your faction.
 
-Additionally, there is a complementary project repository for fixing and improving game data and assets such as
-INI scripts, GUI, AI, maps, models, textures, audio, localization. You can find it
-[here](https://github.com/TheSuperHackers/GeneralsGamePatch/) and contribute to it as well.
+### **Features**
+*   **Toggle Integration:** Press the **INSERT** key in-game to toggle AI assistance on/off instantly.
+*   **Automatic Base Building:** The AI intelligently constructs base structures using a **Hybrid Build Logic**:
+    *   **Smart Power Management:** Prevents "Power Plant spam" by building power only when needed (capped/hybrid logic).
+    *   **Prerequisite Handling:** Automatically builds Barracks, War Factories, Airfields, and Supply Centers in the correct reliance order.
+    *   **Deadlock Prevention:** Fixed logic issues (like the "0/0 Power Deadlock") to ensure the AI always kickstarts its economy.
+*   **Unit Production:** (In Progress) The AI loads standard Skirmish Teams to produce units and attack enemies.
+*   **Smart Dozer Management:** Automatically finds and assigns idle Dozers to construction tasks.
 
-## Project Overview
+### **Technical Implementation**
+*   **`AICoopPlayer`:** A specialized class inheriting from `AISkirmishPlayer` that bridges the gap between human input and AI logic.
+*   **Script & Team Loading:** Custom logic correctly identifies and loads Skirmish Scripts/Teams for the human player (fixing the `TheKey_teamOwner` bug).
+*   **Hybrid Build System:** Combines hard-coded logic for critical resource management with the engine's native `isBuildable` checks for a smooth progression.
 
-The game was originally developed using Visual Studio 6 and C++98. We've updated the code to be compatible with Visual
-Studio 2022 and C++20.
+## 🛠️ Build Instructions
 
-The initial goal of this project is to fix critical bugs and implement improvements while maintaining compatibility with
-the original *Generals* version 1.08 and *Zero Hour* version 1.04. Once we can break retail compatibility, more fixes
-and features will be possible to implement.
+### Prerequisites
+*   Visual Studio 2022 (Enterprise/Professional/Community) with C++ Desktop Development workload.
+*   CMake (3.20+)
+*   Ninja Build System (optional but recommended for speed)
 
-## Current Focus and Future Plans
+### Building the Game
+We provide scripts to simplify the build process:
 
-Here's an overview of our current focus and future plans
+1.  **Full Build (Tools + Game):**
+    Run `build.bat` in the root directory.
+    *   This compiles all tools (`WorldBuilder`, `GUIEdit`, etc.) and the main game executable.
+    *   Binaries are copied to `Output\ZeroHour`.
 
-- **Modernizing the Codebase**: Transitioning to modern C++ standards and refactoring old code.
-- **Critical Bug Fixes**: Fixing game-breaking issues (e.g., fullscreen crash).
-- **Minor Bug Fixes**: Addressing minor bugs (e.g., UI issues, graphical glitches).
-- **Cross-Platform Support**: Adding support for more platforms (e.g., Linux, macOS).
-- **Engine Improvements**: Enhancing the game engine to improve performance and stability.
-- **Client-Side Features**: Enhancing the game's client with features such as an improved replay viewer and UI updates.
-- **Multiplayer Improvements**: Implementing a new game server and an upgraded matchmaking lobby.
-- **Tooling Improvements**: Developing new or improving existing tools for modding and game development.
-- **Community-Driven Improvements**: Once the community grows, we plan to incorporate more features, updates, and
-  changes based on player feedback.
+2.  **Fast Game Build (Game Only):**
+    Run `build_game.bat`.
+    *   Compiles *only* `generalszh.exe` (bypassing occasional tool chain errors).
+    *   Automatically deploys the executable to `Output\ZeroHour`.
 
-## Running the Game
+## 📂 Project Structure
+*   **GeneralsMD:** Main game engine code (Zero Hour).
+*   **Generals:** Base Generals code.
+*   **Core:** Shared core libraries.
+*   **Output:** Destination for compiled binaries.
 
-To run *Generals* or *Zero Hour* using this project, you need to have the original *Command & Conquer: Generals and Zero Hour* game
-installed. The easiest way to get it is through *Command & Conquer The Ultimate Collection*
-on [Steam](https://store.steampowered.com/bundle/39394). Once the game is ready, download the latest version of the
-project from [GitHub Releases](https://github.com/TheSuperHackers/GeneralsGameCode/releases), extract the necessary 
-files, and follow the instructions in the [Wiki](https://github.com/TheSuperHackers/GeneralsGameCode/wiki).
+## 📊 Current Status (Jan 2026)
 
+| Feature | Status | Notes |
+| :--- | :--- | :--- |
+| **AI Assist Toggle** | ✅ Working | Press `INSERT` to Activate/Deactivate. |
+| **Team Loading** | ✅ Fixed | Loads Skirmish Teams correctly. |
+| **Base Building** | ✅ Optimized | Uses Hybrid Logic (No deadlock, No spam). |
+| **Dozer Management** | ⚠️ Testing | Logs added to debug occasional selection failures. |
+| **Unit Production** | 🚧 In Progress | Teams load, but production flow needs verification. |
 
-## Joining the Community
+## 🎮 How to Play / Installation
 
-You can chat and discuss the development of the project on our [Discord channel](https://www.community-outpost.com/discord) to get the latest updates,
-report bugs, and contribute to the project!
+To run this modified version, you need a legit copy of **Command & Conquer: Generals Zero Hour** (Steam, EA App, or CD version).
 
-## Building the Game Yourself
+1.  **Build the Project:** Follow the [Build Instructions](#-build-instructions) above to generate the binaries.
+2.  **Locate Binaries:** Go to the `Output\ZeroHour` directory in this project.
+3.  **Install:**
+    *   Copy all contents of `Output\ZeroHour` (including `generalszh.exe` and any `.dll` files).
+    *   Paste them into your original game installation folder (e.g., `C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Generals Zero Hour`).
+    *   **Replace** the existing files when prompted.
+4.  **Run:** Launch the game using the newly replaced `generalszh.exe` (or launch via Steam if you replaced the steam executable).
 
-We provide support for building the project using Visual Studio 6 (VS6) and Visual Studio 2022. For detailed build
-instructions, check the [Wiki](https://github.com/TheSuperHackers/GeneralsGameCode/wiki/build_guides), which also
-includes guides for building with Docker, CLion, and links to forks supporting additional versions.
-
-### Dependency management
-
-The repository uses a vcpkg manifest (`vcpkg.json`) paired with a lockfile (`vcpkg-lock.json`). When you add or upgrade
-dependencies, run `vcpkg install --x-manifest-root . --triplet <triplet>` with `VCPKG_FEATURE_FLAGS=versions` so the
-lockfile picks up the new versions and include the updated lockfile in your change. GitHub Actions consumes these ports
-through `VCPKG_BINARY_SOURCES=clear;files,<workspace>/vcpkg-bincache,readwrite` (paired with an `actions/cache` entry for
-that folder), so the first CI build warms the cache and subsequent builds pull prebuilt binaries instead of
-re-compiling everything.
-
-## Contributing
-
-We welcome contributions to the project! If you’re interested in contributing, you need to have knowledge of C++. Join
-the developer chat on Discord for more information on how to get started. Please make sure to read our
-[Contributing Guidelines](CONTRIBUTING.md) before submitting a pull request. You can also check out 
-the [Wiki](https://github.com/TheSuperHackers/GeneralsGameCode/wiki) for more detailed documentation.
-
-
-## License & Legal Disclaimer
-
-EA has not endorsed and does not support this product. All trademarks are the property of their respective owners.
-
-This project is licensed under the [GPL-3.0 License](https://www.gnu.org/licenses/gpl-3.0.html), which allows you to
-freely modify and distribute the source code under the terms of this license. Please see [LICENSE.md](LICENSE.md) 
-for details.
