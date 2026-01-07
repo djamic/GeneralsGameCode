@@ -241,6 +241,22 @@ void AICoopPlayer::assistHumanPlayer() {
 
   // 4. Auto-defend base (disabled - needs fix for NULL pointer)
   // autoDefendBase();
+
+  // 5. Unit Production and Team Management
+  // This drives the AI's ability to build units using the Skirmish Teams loaded
+  // earlier.
+  if (m_skirmishScriptsLoaded) {
+    // Ensure the "AI" (acting for human) is allowed to build units
+    if (!m_player->getCanBuildUnits()) {
+      m_player->setCanBuildUnits(true);
+    }
+
+    // Standard AI update cycle for teams and upgrades
+    checkReadyTeams();     // Start teams that are ready
+    checkQueuedTeams();    // Check if queued teams are finished
+    doTeamBuilding();      // Decide what team to build next
+    doUpgradesAndSkills(); // Purchase upgrades or general abilities
+  }
 }
 
 void AICoopPlayer::autoManageIdleDozers() {
@@ -331,14 +347,18 @@ void AICoopPlayer::autoManageIdleUnits() {
 
         idleUnitCount++;
 
-        // Send unit to guard base position
-        ai->aiGuardPosition(&baseCenter, GUARDMODE_NORMAL, CMD_FROM_AI);
+        // DISABLE: Do not send idle units back to base.
+        // This interferes with manual commands and capture missions (e.g. Oil
+        // Derricks). The AI should leave them where they are (holding ground).
+        // ai->aiGuardPosition(&baseCenter, GUARDMODE_NORMAL, CMD_FROM_AI);
       }
     }
   }
 
   if (idleUnitCount > 0) {
-    DjLog("AICoopPlayer: Sent %d idle units to guard base", idleUnitCount);
+    // Log finding them, but don't move them.
+    // DjLog("AICoopPlayer: Found %d idle units (not recalling)",
+    // idleUnitCount);
   }
 }
 

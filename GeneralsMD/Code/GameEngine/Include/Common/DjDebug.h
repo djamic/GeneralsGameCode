@@ -11,8 +11,9 @@
 // Global flag to control logging (defined in GameLogic.cpp)
 extern bool g_enableDjLog;
 
-// Maximum lines to write (prevents disk overflow)
-#define DJ_LOG_MAX_LINES 10000
+// Maximum lines to write (prevents disk overflow) - DISABLED for testing
+#define DJ_LOG_MAX_LINES 99999999 // Effectively unlimited
+
 extern int g_djLogLineCount; // Defined in GameLogic.cpp
 
 static void DjLog(const char *format, ...) {

@@ -53,8 +53,10 @@ We provide scripts to simplify the build process:
 | **AI Assist Toggle** | ✅ Working | Press `INSERT` to Activate/Deactivate. |
 | **Team Loading** | ✅ Fixed | Loads Skirmish Teams correctly. |
 | **Base Building** | ✅ Optimized | Uses Hybrid Logic (No deadlock, No spam). |
-| **Dozer Management** | ⚠️ Testing | Logs added to debug occasional selection failures. |
-| **Unit Production** | 🚧 In Progress | Teams load, but production flow needs verification. |
+| **Dozer Management** | ✅ Working | Smartly assigns idle dozers to tasks. |
+| **Unit Production** | ✅ Working | Standard Skirmish Teams load and produce units. |
+| **Unit Control** | ✅ Fixed | "Return to Base" bug fixed. Capture/Hold logic works. |
+| **Advanced Control** | ✅ Native | Hero/Special abilities work via standard scripts. |
 
 ## 🎮 How to Play / Installation
 

@@ -17,7 +17,20 @@
     *   **Yechim:** `buildStructureWithDozer` funksiyasi endi tayyor topilgan `dozer` obyektini argument sifatida qabul qiladi.
 3.  **Unit Production (Qo'shin Chiqarish):**
     *   **Muammo:** AI binolarni qursa ham, tank/askarlar chiqarmasdi.
-    *   **Yechim:** `AICoopPlayer::assistHumanPlayer` ichida `AIUpdate` zanjiri to'g'ri chaqirilishi yo'lga qo'yildi.
+    *   **Yechim:** `AICoopPlayer::assistHumanPlayer` ichida `checkReadyTeams` va boshqa funksiyalar chaqirildi.
+    *   **Natija:** Loglar orqali 114 ta Skirmish Team (hujum to'lqinlari) muvaffaqiyatli yuklangani va AI armiya yig'ishga tayyorligi tasdiqlandi. (Verified 2026-01-07).
+4.  **Unit Control (Unit Boshqaruvi - "Return to Base" Bug):**
+    *   **Muammo:** Unitlar mapning uzoq nuqtasiga (masalan, Neft vishkasiga) yuborilganda, 10 soniyadan so'ng o'z-o'zidan bazaga qaytib kelardi.
+    *   **Sabab:** `AICoopPlayer::autoManageIdleUnits` funksiyasi "idle" (bo'sh) turgan unitlarni majburlab bazaga chaqirib olardi.
+    *   **Yechim:** Bu funksiya o'chirib qo'yildi (Disabled).
+    *   **Natija:** Unitlar endi buyruq berilgan joyda turadi va o'yinchi rejasini buzmaydi. (Verified 2026-01-07).
+5.  **Advanced Unit Control (Binolarni Egallash va Qahramonlar):**
+    *   **Holat:** Orginal AI bilan bir xil mantig'da ishlaydi.
+    *   **Mexanizm:** `Skirmish Scripts` (Capture) va `SpecialPower` (Hero Abilities) orqali boshqariladi.
+    *   **Tuzatish:** "Return to Base" funksiyasi o'chirilgani sababli, endi Capture jamoalari o'z vazifasini bajarib, ortga qaytmaydi.
+    *   **Qo'shimcha Kod:** Bu funksiyalar uchun alohida C++ kod yozish shart emas, chunki ular dvigatelning o'zida (`AICommandInterface`, `SpecialPower`) allaqachon mavjud va scriptlar tomonidan chaqiriladi.
+
+
 
 ## 📂 Muhim Fayllar
 Loyiha `GeneralsMD\Code\GameEngine\Source\GameLogic\AI\` papkasida joylashgan:
