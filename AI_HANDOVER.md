@@ -43,6 +43,26 @@ Loyiha ildizida joylashgan `build.bat` skripti orqali.
 2.  **Resource Modifiers:** Agar "Poor" (Kambag'al) bo'lsangiz, taymer tezlashadi (10 soniya -> 1 soniya bo'lib qolishi mumkin). Bu normal holat.
 3.  **Dozer Multitasking:** AI bo'sh turgan barcha dozerlarni ishlatishga harakat qiladi. Bu "bug" emas, bu "feature".
 
+## 🧪 Sinovdan O'tgan Ssenariylar (Tested Scenarios)
+1.  **Human + AI Assist (Coop):**
+    *   Siz o'ynaysiz, AI yordam beradi.
+    *   Tasdiqlandi: AI binolarni va askarlarni nazoratli tezlikda quradi.
+2.  **AI Bot vs AI Bot (Skirmish):**
+    *   Tasdiqlandi: Bizning "0 Timer Fix" global ta'sirga ega. Oddiy botlar ham endi spam qilmaydi va barqaror o'ynaydi.
+
+## ⚡ Technical Gotchas (Ehtiyot bo'ling!)
+*   **Include Order (Juda Muhim):** `AI.cpp` yoki boshqa fayllarda `DjDebug.h` ni qo'shganda, u **HAR DOIM** `PreRTS.h` dan KEYIN, va boshqa tizim headerlaridan oldin kelishi kerak. Aks holda `Identifier not found` xatosi chiqadi.
+    ```cpp
+    #include "PreRTS.h" // 1-chi
+    #include "Common/DjDebug.h" // 2-chi (Darhol shu yerda!)
+    #include "GameLogic/AI.h" // Keyin boshqalar...
+    ```
+*   **Log Spam:** Hozirgi kodda debug loglar juda ko'p. Release qilishdan oldin `AISkirmishPlayer.cpp` va `AIPlayer.cpp` dagi `DjLog` larni olib tashlash yoki commentga olish kerak.
+
+## 🔮 Kelajakdagi Ishlar (Future Work)
+*   **Config Fix:** Agar iloji bo'lsa, `AI.ini` faylini topib, uning ichidagi `StructureSeconds` ni 0 dan 10-30 ga o'zgartirish kerak. Bu kod-level fixdan ko'ra to'g'riroq yechim bo'ladi.
+*   **Smart Assist:** AI faqat Human Player "request" qilganda (masalan beacon qo'yganda) qurilish qilishini ta'minlash.
+
 ## 🌐 Git & Repositories
 *   **Bizning Repo (Push):** `https://github.com/djamic/GeneralsGameCode`
     *   O'zgarishlarni shu yerga yuklang.
