@@ -43,4 +43,10 @@ Loyiha ildizida joylashgan `build.bat` skripti orqali.
 2.  **Resource Modifiers:** Agar "Poor" (Kambag'al) bo'lsangiz, taymer tezlashadi (10 soniya -> 1 soniya bo'lib qolishi mumkin). Bu normal holat.
 3.  **Dozer Multitasking:** AI bo'sh turgan barcha dozerlarni ishlatishga harakat qiladi. Bu "bug" emas, bu "feature".
 
+## 🌐 Git & Repositories
+*   **Bizning Repo (Push):** `https://github.com/djamic/GeneralsGameCode`
+    *   O'zgarishlarni shu yerga yuklang.
+*   **Upstream Repo (Pull):** `https://github.com/TheSuperHackers/GeneralsGameCode`
+    *   Asl kod manbai. Fixlarni olish uchun ishlatiladi.
+
 Omad! 🚀
