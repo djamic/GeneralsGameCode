@@ -12,8 +12,8 @@ A robust "AI Assist" mode has been implemented, allowing the AI to take control 
     *   **Smart Power Management:** Prevents "Power Plant spam" by building power only when needed (capped/hybrid logic).
     *   **Prerequisite Handling:** Automatically builds Barracks, War Factories, Airfields, and Supply Centers in the correct reliance order.
     *   **Deadlock Prevention:** Fixed logic issues (like the "0/0 Power Deadlock") to ensure the AI always kickstarts its economy.
-*   **Unit Production:** (In Progress) The AI loads standard Skirmish Teams to produce units and attack enemies.
-*   **Smart Dozer Management:** Automatically finds and assigns idle Dozers to construction tasks.
+*   **Unit Production:** Fully functional. The AI loads standard Skirmish Teams to produce units and execute attack scripts.
+*   **Smart Dozer Management:** Automatically finds and assigns idle Dozers to construction tasks, ensuring maximum efficiency.
 
 ### **Technical Implementation**
 *   **`AICoopPlayer`:** A specialized class inheriting from `AISkirmishPlayer` that bridges the gap between human input and AI logic.
