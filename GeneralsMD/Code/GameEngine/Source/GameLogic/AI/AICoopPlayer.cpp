@@ -134,7 +134,7 @@ void AICoopPlayer::acquireEnemy() {
 
 void AICoopPlayer::assistHumanPlayer() {
   // Log assist mode activity periodically
-  if (TheGameLogic->getFrame() % 300 == 0) {
+  if (TheGameLogic->getFrame() % 1800 == 0) {
     DjLog("AICoopPlayer::assistHumanPlayer - Assisting player %d",
           m_player->getPlayerIndex());
   }
@@ -227,10 +227,11 @@ void AICoopPlayer::assistHumanPlayer() {
   updateBuildPriorities(); // Using Skirmish Scripts or Default
 
   // 1. Auto-build structures (using base AI logic with our priority system)
-  // Force the build flag because we skip AIPlayer::update which normally sets
-  // it
-  m_readyToBuildStructure = true;
-  processBaseBuilding();
+  // Use doBaseBuilding() which handles timing checks correctly
+  DjLog("AICoopPlayer::assistHumanPlayer - BEFORE doBaseBuilding: "
+        "m_structureTimer=%d, m_readyToBuildStructure=%d",
+        m_structureTimer, m_readyToBuildStructure ? 1 : 0);
+  doBaseBuilding();
 
   // 2. Manage idle dozers
   autoManageIdleDozers();

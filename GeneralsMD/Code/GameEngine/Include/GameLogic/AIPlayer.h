@@ -267,8 +267,8 @@ protected:
   Object *buildStructureNow(const ThingTemplate *bldgPlan,
                             BuildListInfo *info); ///< Build a base buiding.
   Object *
-  buildStructureWithDozer(const ThingTemplate *bldgPlan,
-                          BuildListInfo *info); ///< Build a base buiding.
+  buildStructureWithDozer(const ThingTemplate *bldgPlan, BuildListInfo *info,
+                          Object *dozer = NULL); ///< Build a base buiding.
   void clearTeamsInQueue(void); ///< Delete all teams in the build queue.
   void computeCenterAndRadiusOfBase(Coord3D *center, Real *radius);
   Object *

@@ -95,6 +95,7 @@ void AISkirmishPlayer::processBaseBuilding(void) {
     BuildListInfo *bldgInfo = NULL;
     Bool isPriority = false;
     Object *bldg = NULL;
+    Object *foundDozer = NULL; // Save dozer to pass to buildStructureWithDozer
     const ThingTemplate *powerPlan = NULL;
     BuildListInfo *powerInfo = NULL;
     Bool isUnderPowered = !m_player->getEnergy()->hasSufficientPower();
@@ -104,15 +105,16 @@ void AISkirmishPlayer::processBaseBuilding(void) {
          info = info->getNext()) {
       AsciiString name = info->getTemplateName();
       if (name.isEmpty()) {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Empty template "
-              "name");
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Empty template "
+        //       "name");
         continue;
       }
       const ThingTemplate *curPlan = TheThingFactory->findTemplate(name);
       if (!curPlan) {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Template %s not "
-              "found",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Template %s not
+        // "
+        //       "found",
+        //       name.str());
         continue;
       }
 
@@ -220,9 +222,10 @@ void AISkirmishPlayer::processBaseBuilding(void) {
 
       // Make sure it is safe to build here.
       if (!isLocationSafe(info->getLocation(), curPlan)) {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Location Unsafe "
-              "for %s",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Location Unsafe
+        // "
+        //       "for %s",
+        //       name.str());
         continue;
       }
 
@@ -244,9 +247,9 @@ void AISkirmishPlayer::processBaseBuilding(void) {
       }
 
       if (!info->isAutomaticBuild()) {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Automatic "
-              "Build for %s",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Automatic "
+        //       "Build for %s",
+        //       name.str());
         continue;
       }
 
@@ -255,17 +258,18 @@ void AISkirmishPlayer::processBaseBuilding(void) {
         if (isUnderPowered) {
           queueDozer();
         }
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: No Dozer found "
-              "for %s",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: No Dozer found "
+        //       "for %s",
+        //       name.str());
         continue;
       }
 
       // I am using curPlan here instead of bldgPlan as implied by analysis
       if (TheBuildAssistant->canMakeUnit(dozer, curPlan) != CANMAKE_OK) {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Dozer cannot make "
-              "%s (Tech/Money/etc)",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Dozer cannot
+        // make "
+        //       "%s (Tech/Money/etc)",
+        //       name.str());
         continue;
       }
 
@@ -274,11 +278,12 @@ void AISkirmishPlayer::processBaseBuilding(void) {
         if (bldgPlan == NULL) {
           bldgPlan = curPlan;
           bldgInfo = info;
+          foundDozer = dozer; // Save the dozer we found for this building
         }
       } else {
-        DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Buildable "
-              "(Prereqs missing?) for %s",
-              name.str());
+        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Buildable "
+        //       "(Prereqs missing?) for %s",
+        //       name.str());
       }
     }
 
@@ -297,7 +302,7 @@ void AISkirmishPlayer::processBaseBuilding(void) {
             bldgPlan->getName().str());
 #ifdef USE_DOZER
       // dozer-construct the building
-      bldg = buildStructureWithDozer(bldgPlan, bldgInfo);
+      bldg = buildStructureWithDozer(bldgPlan, bldgInfo, foundDozer);
       if (bldg) {
         DjLog("AISkirmishPlayer::processBaseBuilding - SUCCESS: Construction "
               "started for %s",
@@ -313,8 +318,10 @@ void AISkirmishPlayer::processBaseBuilding(void) {
         bldgInfo->decrementNumRebuilds();
 
         m_readyToBuildStructure = false;
-        m_structureTimer =
-            TheAI->getAiData()->m_structureSeconds * LOGICFRAMES_PER_SECOND;
+        Int seconds = TheAI->getAiData()->m_structureSeconds;
+        if (seconds <= 0)
+          seconds = 10; // Fallback to 10 seconds to prevent infinite build loop
+        m_structureTimer = seconds * LOGICFRAMES_PER_SECOND;
         if (m_player->getMoney()->countMoney() <
             TheAI->getAiData()->m_resourcesPoor) {
           m_structureTimer =
@@ -326,6 +333,11 @@ void AISkirmishPlayer::processBaseBuilding(void) {
         }
         m_frameLastBuildingBuilt = TheGameLogic->getFrame();
         // only build one building per delay loop
+        DjLog("AISkirmishPlayer::processBaseBuilding - TIMER SET: "
+              "m_structureTimer=%d, m_readyToBuildStructure=%d, "
+              "structureSeconds=%d",
+              m_structureTimer, m_readyToBuildStructure ? 1 : 0,
+              TheAI->getAiData()->m_structureSeconds);
       }
 
 #else
@@ -364,6 +376,7 @@ void AISkirmishPlayer::processBaseBuilding(void) {
             }
             m_frameLastBuildingBuilt = TheGameLogic->getFrame();
             // only build one building per delay loop
+            break;
           }
         }
       }

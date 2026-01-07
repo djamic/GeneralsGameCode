@@ -540,9 +540,11 @@ Object *AIPlayer::buildStructureNow(const ThingTemplate *bldgPlan,
 // ------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------
 Object *AIPlayer::buildStructureWithDozer(const ThingTemplate *bldgPlan,
-                                          BuildListInfo *info) {
-  // Find a dozer.
-  Object *dozer = findDozer(info->getLocation());
+                                          BuildListInfo *info, Object *dozer) {
+  // Use passed dozer if available, otherwise find one
+  if (dozer == NULL) {
+    dozer = findDozer(info->getLocation());
+  }
   if (dozer == NULL) {
     return NULL;
   }
@@ -3406,7 +3408,7 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
 
         AIUpdateInterface *ai = obj->getAIUpdateInterface();
         if (ai == NULL) {
-          DjLog("AIPlayer::findDozer - REJECT: No AIUpdateInterface");
+          // DjLog("AIPlayer::findDozer - REJECT: No AIUpdateInterface");
           continue;
         }
 
@@ -3419,17 +3421,17 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
             // If it is gathering supplies, don't steal it.
             if (supplyTruckAI->isCurrentlyFerryingSupplies() ||
                 supplyTruckAI->isForcedIntoWantingState()) {
-              DjLog("AIPlayer::findDozer - REJECT: Busy ferrying supplies");
+              // DjLog("AIPlayer::findDozer - REJECT: Busy ferrying supplies");
               continue;
             }
           }
           if (obj->getID() == m_repairDozer) {
-            DjLog("AIPlayer::findDozer - REJECT: Is repair dozer");
+            // DjLog("AIPlayer::findDozer - REJECT: Is repair dozer");
             continue; // don't steal the repair dozer.
           }
           needDozer = false; // dozer exists, may be busy.
           if (dozerAI->isTaskPending(DOZER_TASK_BUILD)) {
-            DjLog("AIPlayer::findDozer - REJECT: Task pending (BUILD)");
+            // DjLog("AIPlayer::findDozer - REJECT: Task pending (BUILD)");
             continue; // already building.
           }
           if (!dozerAI->isAnyTaskPending()) {
@@ -3454,7 +3456,7 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
             }
           }
         } else {
-          DjLog("AIPlayer::findDozer - REJECT: No DozerAIInterface");
+          // DjLog("AIPlayer::findDozer - REJECT: No DozerAIInterface");
         }
       }
     }
@@ -3473,7 +3475,7 @@ Object *AIPlayer::findDozer(const Coord3D *pos) {
     DjLog("AIPlayer::findDozer - returning fallback dozer ID: %d",
           dozer->getID());
   } else {
-    DjLog("AIPlayer::findDozer - FAILURE: No dozer returned.");
+    // DjLog("AIPlayer::findDozer - FAILURE: No dozer returned.");
   }
 
   return dozer;
