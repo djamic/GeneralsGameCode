@@ -1,86 +1,40 @@
-# C&C Generals Zero Hour: Source Code Modification
+# GeneralsMD: Advanced AI & Engine Overhaul
+**For Command & Conquer: Generals Zero Hour**
 
-This project represents a modified version of the **Command & Conquer: Generals Zero Hour** game engine source code. It includes fixes, modernizations, and new gameplay features.
+> **Current Version:** Dev-2026.01
+> **Status:** Stable (AI Assist & Skirmish Fixes Active)
 
-## 🚀 Key Feature: AI Assist (Co-op AI)
+**GeneralsMD** is a source code modification project aimed at modernizing the *Zero Hour* engine and introducing a powerful **Co-op AI Assistant**.
 
-A robust "AI Assist" mode has been implemented, allowing the AI to take control of the human player's base and operations. This is designed for co-op gameplay, testing, or simply watching the AI manage your faction.
+## 🌟 Main Feature: AI Companion
+Ever wanted to play *with* the AI instead of just against it?
+**GeneralsMD** introduces `AICoopPlayer`—a smart assistant that manages your base while you focus on combat.
 
-### **Features**
-*   **Toggle Integration:** Press the **INSERT** key in-game to toggle AI assistance on/off instantly.
-*   **Automatic Base Building:** The AI intelligently constructs base structures using a **Hybrid Build Logic**:
-    *   **Smart Power Management:** Prevents "Power Plant spam" by building power only when needed (capped/hybrid logic).
-    *   **Prerequisite Handling:** Automatically builds Barracks, War Factories, Airfields, and Supply Centers in the correct reliance order.
-    *   **Deadlock Prevention:** Fixed logic issues (like the "0/0 Power Deadlock") to ensure the AI always kickstarts its economy.
-*   **Unit Production:** Fully functional. The AI loads standard Skirmish Teams to produce units and execute attack scripts.
-*   **Smart Dozer Management:** Automatically finds and assigns idle Dozers to construction tasks, ensuring maximum efficiency.
+*   **🤖 AI Assist Mode:** Press `INSERT` in-game to let the AI take the wheel. It will build structures, manage power, and train units for you.
+*   **🧠 Hybrid Logic:** Uses a custom "Smart Build" algorithm that prevents common AI bugs (like the "Power Plant Spam" or "Deadlocks").
+*   **🛠️ Tech Support:** Automatically captures Oil Derricks, expands territory, and uses Hero abilities.
 
-### **Technical Implementation**
-*   **`AICoopPlayer`:** A specialized class inheriting from `AISkirmishPlayer` that bridges the gap between human input and AI logic.
-*   **Script & Team Loading:** Custom logic correctly identifies and loads Skirmish Scripts/Teams for the human player (fixing the `TheKey_teamOwner` bug).
-*   **Hybrid Build System:** Combines hard-coded logic for critical resource management with the engine's native `isBuildable` checks for a smooth progression.
+## 🚀 Key Improvements
+Beyond the AI, this project fixes critical engine bugs left in the original game:
+1.  **Unit Recall Fix:** Capture teams and units sent to hold ground no longer randomly run back to base.
+2.  **Skirmish Team Loading:** Fixed a bug where the AI wouldn't load attack scripts for the human player's faction.
+3.  **Modern Build System:** optimized for Visual Studio 2022 and Ninja, making modding easier than ever.
 
-## 🛠️ Build Instructions
+## 📦 Installation
+1.  **Download/Build:** Get the latest binaries (see Build Instructions below).
+2.  **Copy:** Drag `generalszh.exe` and `Generals.dll` (from `Output/ZeroHour`) into your game folder.
+3.  **Play:** Launch the game. No new launcher needed.
 
-### Prerequisites
-*   Visual Studio 2022 (Enterprise/Professional/Community) with C++ Desktop Development workload.
-*   CMake (3.20+)
-*   Ninja Build System (optional but recommended for speed)
+## �️ For Developers: Build It Yourself
+This project is set up for **Visual Studio 2022**.
+1.  Clone the repo: `git clone https://github.com/djamic/GeneralsGameCode`
+2.  Run `build.bat` in the root.
+3.  Find your fresh build in `Output\ZeroHour`.
 
-### Building the Game
-We provide scripts to simplify the build process:
+## � License & Credits
+*   **Source Code:** Based on the restoration by [Thyme / TheSuperHackers](https://github.com/TheSuperHackers/GeneralsGameCode).
+*   **Modifications:** AI Assist and Engine Fixes by [djamic].
+*   **Original Game:** EA Pacific.
 
-1.  **Full Build (Tools + Game):**
-    Run `build.bat` in the root directory.
-    *   This compiles all tools (`WorldBuilder`, `GUIEdit`, etc.) and the main game executable.
-    *   Binaries are copied to `Output\ZeroHour`.
-
-2.  **Fast Game Build (Game Only):**
-    Run `build_game.bat`.
-    *   Compiles *only* `generalszh.exe` (bypassing occasional tool chain errors).
-    *   Automatically deploys the executable to `Output\ZeroHour`.
-
-## 📂 Project Structure
-*   **GeneralsMD:** Main game engine code (Zero Hour).
-*   **Generals:** Base Generals code.
-*   **Core:** Shared core libraries.
-*   **Output:** Destination for compiled binaries.
-
-## 📊 Current Status (Jan 2026)
-
-| Feature | Status | Notes |
-| :--- | :--- | :--- |
-| **AI Assist Toggle** | ✅ Working | Press `INSERT` to Activate/Deactivate. |
-| **Team Loading** | ✅ Fixed | Loads Skirmish Teams correctly. |
-| **Base Building** | ✅ Optimized | Uses Hybrid Logic (No deadlock, No spam). |
-| **Dozer Management** | ✅ Working | Smartly assigns idle dozers to tasks. |
-| **Unit Production** | ✅ Working | Standard Skirmish Teams load and produce units. |
-| **Unit Control** | ✅ Fixed | "Return to Base" bug fixed. Capture/Hold logic works. |
-| **Advanced Control** | ✅ Native | Hero/Special abilities work via standard scripts. |
-
-## 🎮 How to Play / Installation
-
-To run this modified version, you need a legit copy of **Command & Conquer: Generals Zero Hour** (Steam, EA App, or CD version).
-
-1.  **Build the Project:** Follow the [Build Instructions](#-build-instructions) above to generate the binaries.
-2.  **Locate Binaries:** Go to the `Output\ZeroHour` directory in this project.
-3.  **Install:**
-    *   Copy all contents of `Output\ZeroHour` (including `generalszh.exe` and any `.dll` files).
-    *   Paste them into your original game installation folder (e.g., `C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Generals Zero Hour`).
-    *   **Replace** the existing files when prompted.
-4.  **Run:** Launch the game using the newly replaced `generalszh.exe` (or launch via Steam if you replaced the steam executable).
-
-## 🐞 Debugging & Logging
-
-If you encounter issues or crashes, the game is configured to output diagnostic logs.
-*   **Log File Location:** `d:\djcc.txt` (Hardcoded for this environment)
-*   **Contents:** Contains detailed info about AI decisions, Team Loading status, and building priority checks.
-*   **Use Case:** Share this file when reporting bugs related to AI Assist or Dozers.
-
-## 📜 Credits
-
-*   **Original Source Code Restoration:** [Thyme / TheSuperHackers](https://github.com/TheSuperHackers/GeneralsGameCode)
-*   **AI Assist Feature & Hybrid Logic:** Developed by [djamic]
-*   **Original Game:** EA Pacific / Electronic Arts
-
-
+---
+*Verified working on Windows 10/11.*
