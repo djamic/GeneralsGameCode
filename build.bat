@@ -63,8 +63,8 @@ if %errorlevel% geq 8 ( echo Robocopy failed for GeneralsMD & exit /b 1 )
 
 echo ========================================================
 echo All binaries copied to:
-echo   %CD%\Output\Generals
-echo   %CD%\Output\ZeroHour
+echo    %CD%\Output\Generals
+echo    %CD%\Output\ZeroHour
 echo ========================================================
 
 set "GAME_DIR=d:\games\Command and Conquer - Generals\Command and Conquer Generals Zero Hour"
@@ -76,3 +76,32 @@ if exist "%GAME_DIR%" (
 ) else (
     echo Warning: Game directory not found at "%GAME_DIR%"
 )
+
+:: --------------------------------------------------------
+:: 4. LOG CLEANUP AND DEV COPY (Yangi qo'shilgan qism)
+:: --------------------------------------------------------
+
+echo.
+echo ========================================================
+echo Cleaning debug log files (emptying content)...
+:: Fayllarni ichini tozalash (0 bayt qilish)
+type nul > "d:\dj_buildlist.txt"
+type nul > "d:\djcc.txt"
+type nul > "d:\djcc_ai.txt"
+type nul > "d:\djcc_events.txt"
+type nul > "d:\djcc_combat.txt"
+echo Logs cleared.
+
+echo.
+echo Copying binaries to Original Code Directory...
+set "DEV_DEST=d:\dj\genenerals c&c\org_code\GeneralsGameCode\Output\ZeroHour"
+
+:: Agar papka yo'q bo'lsa yaratish (xavfsizlik uchun)
+if not exist "%DEV_DEST%" mkdir "%DEV_DEST%"
+
+:: Fayllarni ko'chirib o'tkazish va almashtirish (/Y so'ramasdan almashtiradi)
+copy /Y "Output\ZeroHour\generalszh.exe" "%DEV_DEST%\generalszh.exe"
+copy /Y "Output\ZeroHour\generalszh.pdb" "%DEV_DEST%\generalszh.pdb"
+
+echo ========================================================
+echo Final Operation Complete.

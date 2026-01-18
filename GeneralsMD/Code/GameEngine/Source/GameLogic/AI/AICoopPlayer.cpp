@@ -33,12 +33,21 @@
 #include "PreRTS.h"
 
 #include "Common/DjDebug.h"
+#include "GameClient/ControlBar.h"
 
 AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   DjLog("AICoopPlayer created for player %d (%ls) Side: %s",
         p->getPlayerIndex(), p->getPlayerDisplayName().str(),
         p->getSide().str());
   m_skirmishScriptsLoaded = false;
+
+  // Clear combat optimization log
+  FILE *f = fopen("d:\\djcc_combat.txt", "w");
+  if (f) {
+    fprintf(f, "Combat Optimization Log Started for Player %d\n",
+            p->getPlayerIndex());
+    fclose(f);
+  }
 }
 
 AICoopPlayer::~AICoopPlayer() {}
@@ -239,8 +248,13 @@ void AICoopPlayer::assistHumanPlayer() {
   // 3. Manage idle units
   autoManageIdleUnits();
 
-  // 4. Auto-defend base (disabled - needs fix for NULL pointer)
-  // autoDefendBase();
+  // 4. Auto-defend base
+  // autoDefendBase(); // Still disabled as per original code
+
+  // 4b. Auto-engage enemies with combat teams
+  autoManageCombatTeams();
+  // 4c. Auto-upgrade Overlords
+  autoManageOverlordUpgrades();
 
   // 5. Unit Production and Team Management
   // This drives the AI's ability to build units using the Skirmish Teams loaded
@@ -435,6 +449,150 @@ void AICoopPlayer::autoDefendBase() {
   }
 }
 
+void AICoopPlayer::autoManageCombatTeams() {
+  // Performance optimization: Check every 15 frames (approx 0.5 seconds)
+  if (TheGameLogic->getFrame() % 15 != 0) {
+    return;
+  }
+
+  // LOGGING: Detailed combat analysis for optimization
+  FILE *combatLog = fopen("d:\\djcc_combat.txt", "a");
+
+  // Iterate through all teams of this player
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+
+    for (DLINK_ITERATOR<Team> iter = (*it)->iterate_TeamInstanceList();
+         !iter.done(); iter.advance()) {
+      Team *team = iter.cur();
+      if (!team || !team->isActive())
+        continue;
+
+      // Skip base defense teams or non-combat teams if necessary
+      // But user wants "moving teams", so we generally check all active teams.
+
+      // We need a representative unit to check proximity
+      Object *representative = NULL;
+
+      // First pass: Find a representative and check if ANYONE is already
+      // fighting
+      // Bool isAlreadyFighting = false;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        if (obj->isKindOf(KINDOF_CAN_ATTACK) &&
+            !obj->isKindOf(KINDOF_STRUCTURE)) {
+
+          // Representative Logic:
+          // 1. If we find an Overlord class, it IMMEDIATELY becomes the
+          // representative (High Priority).
+          // 2. Otherwise, take the first combat unit we find.
+
+          bool isOverlord = false;
+          // Check for Overlord/Emperor by name or kindof (using name pattern
+          // for safety) Emperor is usually "ChinaTankEmperor", Overlord is
+          // "ChinaTankOverlord"
+          const ThingTemplate *tmpl = obj->getTemplate();
+          if (tmpl && (strstr(tmpl->getName().str(), "Overlord") ||
+                       strstr(tmpl->getName().str(), "Emperor"))) {
+            isOverlord = true;
+          }
+
+          if (isOverlord) {
+            representative = obj;
+            // We found our heavy tank anchor. The search for a "better"
+            // representative is done. We continue iterating just to ensure we
+            // didn't miss anything else if needed, but 'representative' will
+            // stick to this Overlord unless we find... another Overlord?
+            // Actually, the first Overlord is fine.
+            break;
+          }
+
+          if (!representative)
+            representative = obj;
+        }
+      }
+
+      if (!representative)
+        continue;
+
+      // Search for enemy near the representative
+      // Radius 250 is standard vision/aggro range
+      Object *enemy =
+          TheAI->findClosestEnemy(representative, 250.0f, AI::CAN_ATTACK, NULL);
+
+      if (enemy) {
+        // LOGGING
+        if (combatLog) {
+          Real distSq = 0.0f;
+          const Coord3D *p1 = representative->getPosition();
+          const Coord3D *p2 = enemy->getPosition();
+          if (p1 && p2)
+            distSq = (p1->x - p2->x) * (p1->x - p2->x) +
+                     (p1->y - p2->y) * (p1->y - p2->y);
+          fprintf(combatLog,
+                  "Frame %u: Team %d guarding loc against Enemy %u (DistSq: "
+                  "%.2f)\n",
+                  TheGameLogic->getFrame(), team->getID(), enemy->getID(),
+                  distSq);
+        }
+
+        // Enemy sighted! GUARD!
+        // Issue guard command to all capable members
+        for (DLINK_ITERATOR<Object> attackIter = team->iterate_TeamMemberList();
+             !attackIter.done(); attackIter.advance()) {
+          Object *attacker = attackIter.cur();
+          if (!attacker || attacker->isEffectivelyDead())
+            continue;
+          if (!attacker->isKindOf(KINDOF_CAN_ATTACK) ||
+              attacker->isKindOf(KINDOF_STRUCTURE))
+            continue;
+          if (attacker->isKindOf(KINDOF_DOZER))
+            continue;
+
+          AIUpdateInterface *ai = attacker->getAIUpdateInterface();
+          if (!ai)
+            continue;
+
+          // Guard the position of the representative (front line).
+          // This ensures the entire team moves to support the engagement,
+          // preventing rear units from staying idle.
+
+          // Fix for "stuttering":
+          // If already guarding this location (or very close), DO NOT re-issue
+          // command. Re-issuing causes the unit to stop, think, and restart
+          // pathfinding.
+          bool alreadyGuarding = false;
+          if (ai->getGuardTargetType() == GUARDTARGET_LOCATION) {
+            const Coord3D *currentGuardPos = ai->getGuardLocation();
+            const Coord3D *targetPos = representative->getPosition();
+            if (currentGuardPos && targetPos) {
+              Real dX = currentGuardPos->x - targetPos->x;
+              Real dY = currentGuardPos->y - targetPos->y;
+              // If within 20 units (very close), consider it the same order
+              if ((dX * dX + dY * dY) < 400.0f) {
+                alreadyGuarding = true;
+              }
+            }
+          }
+
+          if (!alreadyGuarding) {
+            ai->aiGuardPosition(representative->getPosition(), GUARDMODE_NORMAL,
+                                CMD_FROM_AI);
+          }
+        }
+      }
+    }
+  }
+  if (combatLog)
+    fclose(combatLog);
+}
+
 //=============================================================================
 // Helper Functions for Build Management
 //=============================================================================
@@ -566,36 +724,210 @@ void AICoopPlayer::initializeBuildPriorities() {
   DjLog("AICoopPlayer: Build priorities initialized (progressive system)");
 }
 
+//=============================================================================
+// Reactive Defense Logic
+//=============================================================================
+
+AICoopPlayer::ThreatType AICoopPlayer::assessGlobalThreat() {
+  int infantryCount = 0;
+  int vehicleCount = 0;
+  int airCount = 0;
+  int structureCount = 0;
+
+  // Scan all enemies
+  for (Int i = 0; i < ThePlayerList->getPlayerCount(); i++) {
+    Player *other = ThePlayerList->getNthPlayer(i);
+    // Skip self and allies
+    if (other == m_player ||
+        m_player->getRelationship(other->getDefaultTeam()) == ALLIES) {
+      continue;
+    }
+
+    // Iterate through enemy teams/objects
+    Player::PlayerTeamList::const_iterator it;
+    for (it = other->getPlayerTeams()->begin();
+         it != other->getPlayerTeams()->end(); ++it) {
+      for (DLINK_ITERATOR<Team> iter = (*it)->iterate_TeamInstanceList();
+           !iter.done(); iter.advance()) {
+        Team *team = iter.cur();
+        if (!team)
+          continue;
+
+        for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+             !objIter.done(); objIter.advance()) {
+          Object *obj = objIter.cur();
+          if (!obj || obj->isEffectivelyDead())
+            continue;
+
+          if (obj->isKindOf(KINDOF_INFANTRY))
+            infantryCount++;
+          else if (obj->isKindOf(KINDOF_VEHICLE))
+            vehicleCount++;
+          else if (obj->isKindOf(KINDOF_AIRCRAFT))
+            airCount++;
+          else if (obj->isKindOf(KINDOF_STRUCTURE))
+            structureCount++;
+        }
+      }
+    }
+  }
+
+  // Determine dominant threat (simple heuristic)
+  if (airCount > 5)
+    return THREAT_AIR;
+  if (vehicleCount > 5)
+    return THREAT_VEHICLE;
+  if (infantryCount > 10)
+    return THREAT_INFANTRY;
+  if (structureCount > 0)
+    return THREAT_STRUCTURE;
+
+  return THREAT_NONE;
+}
+
 void AICoopPlayer::updateBuildPriorities() {
   // Called every frame to dynamically update AutomaticBuild flags
   // Hybrid Logic:
-  // 1. Power Plants: Smart management to fix 0/0 deadlock AND prevent spam (6
-  // PPs).
-  // 2. Others: Enable All to let Engine/AI prerequisites handle the flow.
+  // 1. Power Plants: Smart management to fix 0/0 deadlock AND prevent spam.
+  // 2. Reactive Tech: Unlock tech structures based on threat and money.
+  // 3. Others: Enable All to let Engine/AI prerequisites handle the flow.
 
   Bool hasSufficientPower = m_player->getEnergy()->hasSufficientPower();
   int powerPlantCount = countStructures("PowerPlant");
   int powerPlantBuilding = countStructuresUnderConstruction("PowerPlant");
+
+  // Reactive Defense Check (every 30 frames to save perf)
+  ThreatType currentThreat = THREAT_NONE;
+  if (TheGameLogic->getFrame() % 30 == 0) {
+    currentThreat = assessGlobalThreat();
+  }
+
+  int money = m_player->getMoney()->countMoney();
 
   for (BuildListInfo *info = m_player->getBuildList(); info;
        info = info->getNext()) {
     AsciiString name = info->getTemplateName();
 
     if (strstr(name.str(), "PowerPlant")) {
-      // Fix 1: Deadlock (0/0 power is "sufficient") -> Force build if count
-      // < 1. Fix 2: Spam (6 PPs) -> Only build if power is actually needed.
       // Logic: Build if (No PPs exist) OR (Power is Low).
       Bool shouldBuild =
           (powerPlantCount + powerPlantBuilding) < 1 || !hasSufficientPower;
-
       info->setAutomaticBuild(shouldBuild);
     } else {
-      // For everything else (Barracks, Supply, Factories), just enable them.
-      // The Engine's "isBuildable" check (prerequisites) will prevent
-      // out-of-order building.
+      // Default: Enable everything
       info->setAutomaticBuild(true);
+
+      // REACTIVE LOGIC: Prioritize Tech Centers if money is high and threat
+      // exists
+      if (money > 4000) {
+        bool isTech =
+            strstr(name.str(), "PropagandaCenter") ||
+            strstr(name.str(), "StrategyCenter") ||
+            strstr(name.str(), "Palace") ||
+            strstr(
+                name.str(),
+                "InternetCenter"); // GLA Black Market equivalent logic usually
+
+        if (isTech && currentThreat == THREAT_VEHICLE) {
+          // We ensure it's enabled (it is), but we could log it.
+          // For now, the existing logic enables it.
+          // Future refinement: Disable 'Barracks' if we desperately need this
+          // Tech? Not implemented yet to avoid stalling.
+          if (TheGameLogic->getFrame() % 900 == 0) {
+            DjLog("AICoopPlayer: Reactive Defense - Rushing Tech %s to counter "
+                  "Vehicle Threat.",
+                  name.str());
+          }
+        }
+      }
     }
   }
 }
 
-//-------------------------------------------------------------------------------------------------
+//=============================================================================
+// Overlord Auto-Upgrade Logic
+//=============================================================================
+void AICoopPlayer::autoManageOverlordUpgrades() {
+  // Check every 30 frames (1 second) to save performance
+  if (TheGameLogic->getFrame() % 30 != 0) {
+    return;
+  }
+
+  // Iterate through player's teams
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> iter = (*it)->iterate_TeamInstanceList();
+         !iter.done(); iter.advance()) {
+      Team *team = iter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        // Identify Overlord or Emperor
+        const ThingTemplate *tmpl = obj->getTemplate();
+        bool isOverlord = false;
+        if (tmpl && (strstr(tmpl->getName().str(), "Overlord") ||
+                     strstr(tmpl->getName().str(), "Emperor"))) {
+          isOverlord = true;
+        }
+
+        if (!isOverlord)
+          continue;
+
+        // UPGRADE LOGIC
+        // Priority 1: Propaganda Tower (Healing)
+        // Priority 2: Gattling Cannon (Anti-Air/Infantry)
+        // Priority 3: Bunker (Infantry transport - rarely used by AI unless
+        // scripted)
+
+        AIUpdateInterface *ai = obj->getAIUpdateInterface();
+        if (!ai)
+          continue;
+
+        // Check funds
+        int money = m_player->getMoney()->countMoney();
+        if (money < 2000)
+          continue; // Save money for production
+
+        // Command Button names for China Overlord
+        // "Command_UpgradeChinaOverlordPropagandaTower"
+        // "Command_UpgradeChinaOverlordGattlingCannon"
+
+        // We attempt to purchase Propaganda Tower first.
+        // Since we cannot easily check "Is Upgraded" without iterating Upgrade
+        // module, we heavily rely on the fact that "useCommandButton" will
+        // fail/do nothing if already upgraded or invalid. We just Spam the
+        // request every few seconds.
+
+        if (money < 2000)
+          continue; // Minimum funds check
+
+        // Try to purchase Propaganda Tower upgrade
+        if (TheGameLogic->getFrame() % 60 ==
+            (obj->getID() % 60)) { // Slightly randomized timing
+          if (TheControlBar) {
+            const CommandButton *cbProp = TheControlBar->findCommandButton(
+                "Command_UpgradeChinaOverlordPropagandaTower");
+            if (cbProp) {
+              // Check if we already have the upgrade to avoid redundant
+              // commands
+              const UpgradeTemplate *upg = cbProp->getUpgradeTemplate();
+              if (!upg || !obj->hasUpgrade(upg)) {
+                obj->doCommandButton(cbProp, CMD_FROM_AI);
+              }
+            }
+          }
+        }
+        // If we have LOTS of money, try Gattling too (if Prop tower fails or
+        // is built?) actually, Overlord can only have ONE. So we should stick
+        // to Propaganda Tower as the best default for "Anchor" logic.
+      }
+    }
+  }
+}

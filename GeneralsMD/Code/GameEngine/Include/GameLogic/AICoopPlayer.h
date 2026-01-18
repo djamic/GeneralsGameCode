@@ -57,6 +57,8 @@ protected:
   void autoManageIdleDozers();
   void autoManageIdleUnits();
   void autoDefendBase();
+  void autoManageCombatTeams();
+  void autoManageOverlordUpgrades();
 
   // Helper functions for build management
   Object *findStructure(const char *namePattern);
@@ -66,6 +68,16 @@ protected:
   // Build priority management
   void initializeBuildPriorities();
   void updateBuildPriorities();
+
+  // Reactive Defense
+  enum ThreatType {
+    THREAT_NONE,
+    THREAT_INFANTRY,
+    THREAT_VEHICLE,
+    THREAT_AIR,
+    THREAT_STRUCTURE
+  };
+  ThreatType assessGlobalThreat();
 
   // Track if we have loaded the Skirmish AI scripts/teams for the human player
   Bool m_skirmishScriptsLoaded;

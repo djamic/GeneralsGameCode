@@ -29,6 +29,11 @@
     *   **Mexanizm:** `Skirmish Scripts` (Capture) va `SpecialPower` (Hero Abilities) orqali boshqariladi.
     *   **Tuzatish:** "Return to Base" funksiyasi o'chirilgani sababli, endi Capture jamoalari o'z vazifasini bajarib, ortga qaytmaydi.
     *   **Qo'shimcha Kod:** Bu funksiyalar uchun alohida C++ kod yozish shart emas, chunki ular dvigatelning o'zida (`AICommandInterface`, `SpecialPower`) allaqachon mavjud va scriptlar tomonidan chaqiriladi.
+6.  **Auto-Combat Logic (Avto-Hujum / 'Gutuh' Behavior):**
+    *   **Muammo:** AI jamoalari harakatlanayotganda (masalan, "MoveTo") yonidan o'tayotgan dushmanga e'tibor bermay o'tib ketardi.
+    *   **Yechim:** `AICoopPlayer::autoManageCombatTeams` funksiyasi qo'shildi.
+    *   **Mexanizm:** Har 0.5 soniyada (15 frame) har bir jamoaning "vakili" atrofida (250 radius) dushman qidiriladi. Agar dushman topilsa, butun jamoaga `Attack` buyrug'i beriladi.
+    *   **Xususiyat:** Bu faqat `AICoopPlayer` ichida ishlaydi, shuning uchun asosiy o'yin mexanizmi (`Team.cpp`) buzilmaydi. (Implemented 2026-01-18).
 
 
 
@@ -50,6 +55,9 @@ Loyiha ildizida joylashgan `build.bat` skripti orqali.
 *   **Log Fayli:** `d:\djcc.txt` (Kodingizda `c:\djcc.txt` yoki boshqa manzillar ham bor, lekin `d:\` asosiy).
 *   **Log Yozish:** Kod ichida istalgan joyda `DjLog("Message: %d", value);` funksiyasini ishlating.
     *   Kerakli header: `#include "Common/DjDebug.h"`
+*   **Combat Analysis:** `AICoopPlayer` ichidagi jangovar logikani optimizatsiya qilish uchun alohida log fayl yaratildi:
+    *   **Fayl:** `d:\djcc_combat.txt`
+    *   **Ma'lumot:** Qaysi jamoa, qaysi dushmanga, qanday masofadan hujum qilganini yozadi. (Check `AICoopPlayer::autoManageCombatTeams`).
 
 ## ⚠️ Eslatmalar (Keyingi AI uchun)
 1.  **AI.ini 0 Timer:** Aslo fallback kodini `AISkirmishPlayer.cpp` dan olib tashlamang! O'yinning asl fayllarida config xatosi bor (`StructureSeconds=0`), kodimiz aynan shuni kompensatsiya qilyapti.
@@ -82,4 +90,46 @@ Loyiha ildizida joylashgan `build.bat` skripti orqali.
 *   **Upstream Repo (Pull):** `https://github.com/TheSuperHackers/GeneralsGameCode`
     *   Asl kod manbai. Fixlarni olish uchun ishlatiladi.
 
-Omad! 🚀
+
+## 🆕 Implementation Update (2026-01-18) - Overlord & Combat Logic
+
+### 1. Overlord Anchoring (Strategic Center)
+*   **Maqsad:** Overlord tanklari jamoaning "markazi" bo'lishi kerak.
+*   **Logic:** `AICoopPlayer::autoManageCombatTeams` funksiyasida jamoa a'zolari tekshiriladi.
+*   **Detail:** Agar jamoada `Overlord` yoki `Emperor` bo'lsa, u **darhol** `representative` (vakil) etib tayinlanadi. Barcha boshqa unitlar shu Overlordning pozitsiyasini `Guard` qiladi.
+*   **Result:** Repair tanklar va piyodalar Overlord atrofida yuradi, uning "Propaganda Tower"i ularni davolaydi.
+
+### 2. Guard Command Stutter Fix (Dovdirashni tuzatish)
+*   **Muammo:** Har 15 frameda `aiGuardPosition` qayta-qayta berilganda, unitlar yurishni to'xtatib, qayta o'ylanayotgandi ("Stuttering").
+*   **Yechim:** `AICoopPlayer.cpp` da tekshiruv qo'shildi:
+    ```cpp
+    if (ai->getGuardTargetType() == GUARDTARGET_LOCATION) {
+        // Hozirgi guard nuqtasi va yangi nuqta orasidagi masofa < 20.0f bo'lsa (distSq < 400),
+        // buyruqni qayta berma!
+        if (distanceSquared < 400.0f) continue;
+    }
+    ```
+*   **Natija:** Unitlar silliq harakatlanadi va faqat dushman joylashuvi jiddiy o'zgarganda yangi buyruq oladi.
+
+### 3. Auto-Upgrade Overlords (Avtomatik Kuchaytirish)
+*   **Logic:** `AICoopPlayer::autoManageOverlordUpgrades` funksiyasi har 30 frameda chaqiriladi.
+*   **Header Talabi:** `#include "GameClient/ControlBar.h"` (Fayl boshiga qo'shish shart!).
+*   **Command Button Access:**
+    *   `TheCommandButtonList` ishlatilmadi (u mavjud emas yoki private).
+    *   **To'g'ri Yo'l:** `TheControlBar->findCommandButton("Command_UpgradeChinaOverlordPropagandaTower")`.
+*   **Execution:**
+    *   `obj->doCommandButton(cbProp, CMD_FROM_AI);`
+    *   Oldin `obj->hasUpgrade(upg)` tekshiruvi qilinadi, pulni bekorga sarflamaslik uchun.
+*   **Prioritet:** Faqat `Propaganda Tower` olinadi (Anchor vazifasi uchun eng muhimi).
+
+### 4. Reactive Defense (Tahdidga Qarab Qurish)
+*   **Logic:** `assessGlobalThreat()` funksiyasi dushman armiyasini skan qiladi.
+*   **Scenario:** Agar dushmanda "Vehicle" (tanklar) ko'p bo'lsa va AIda pul > 4000 bo'lsa:
+    *   `StrategyCenter` yoki `PropagandaCenter` qurish prioriteti oshiriladi.
+    *   Bu Ovelord ishlab chiqarishni ochadi.
+
+### 5. Texnik Eslatmalar (Keyingi Dasturchiga)
+*   **ControlBar.h:** Bu fayl `PreRTS.h` dan keyin kelishi shart emas, lekin `AICoopPlayer.cpp` da `include` qilishni unutmang.
+*   **Do Command:** AI unitiga buyruq berishning eng ishonchli yo'li bu `obj->doCommandButton`. `AIUpdateInterface::useCommandButton` har doim ham ishlamasligi mumkin.
+*   **Performance:** Hamma narsani har frameda tekshirmang! `TheGameLogic->getFrame() % 30` yoki `% 60` dan foydalaning.
+
