@@ -34,12 +34,18 @@
 
 #include "Common/DjDebug.h"
 #include "GameClient/ControlBar.h"
+#include "GameLogic/TerrainLogic.h" // For Waypoint class
+#include <new>                      // For placement new
 
 AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   DjLog("AICoopPlayer created for player %d (%ls) Side: %s",
         p->getPlayerIndex(), p->getPlayerDisplayName().str(),
         p->getSide().str());
   m_skirmishScriptsLoaded = false;
+
+  // Initialize waypoint system (NEW)
+  m_airPatrolPath = NULL;
+  m_airPatrolInitialized = false;
 
   // Clear combat optimization log
   FILE *f = fopen("d:\\djcc_combat.txt", "w");
@@ -255,6 +261,8 @@ void AICoopPlayer::assistHumanPlayer() {
   autoManageCombatTeams();
   // 4c. Auto-upgrade Overlords
   autoManageOverlordUpgrades();
+  // 4d. Manage aircraft patrol (NEW)
+  manageAirUnits();
 
   // 5. Unit Production and Team Management
   // This drives the AI's ability to build units using the Skirmish Teams loaded
@@ -930,4 +938,210 @@ void AICoopPlayer::autoManageOverlordUpgrades() {
       }
     }
   }
+}
+
+//=============================================================================
+// Aircraft Waypoint Management (NEW)
+//=============================================================================
+
+void AICoopPlayer::initializeAirPatrol() {
+  if (m_airPatrolInitialized) {
+    return; // Already initialized
+  }
+
+  DjLog("AICoopPlayer: Initializing Air Patrol Waypoints...");
+
+  // Get base center for patrol path
+  Coord3D baseCenter;
+  if (!getBaseCenter(&baseCenter)) {
+    DjLog("AICoopPlayer: No base center found, skipping air patrol "
+          "initialization.");
+    return;
+  }
+
+  // Create patrol waypoints in a circle around the base
+  Real patrolRadius = 500.0f;
+  Real airHeight = 100.0f; // Fly above ground
+
+  // Use stack-allocated Coord3D structs (Waypoint copies the data)
+  Coord3D loc1, loc2, loc3, loc4;
+
+  loc1.x = baseCenter.x;
+  loc1.y = baseCenter.y + patrolRadius;
+  loc1.z = baseCenter.z + airHeight;
+
+  loc2.x = baseCenter.x + patrolRadius;
+  loc2.y = baseCenter.y;
+  loc2.z = baseCenter.z + airHeight;
+
+  loc3.x = baseCenter.x;
+  loc3.y = baseCenter.y - patrolRadius;
+  loc3.z = baseCenter.z + airHeight;
+
+  loc4.x = baseCenter.x - patrolRadius;
+  loc4.y = baseCenter.y;
+  loc4.z = baseCenter.z + airHeight;
+
+  // Create waypoints using PLACEMENT NEW to bypass MemoryPool!
+  // We allocate memory from the global heap, then construct the object there.
+  Int baseIDInt = (m_player->getPlayerIndex() * 10000) + 9000;
+
+  void *mem1 = ::operator new(sizeof(Waypoint));
+  Waypoint *wp1 =
+      new (mem1) Waypoint(static_cast<WaypointID>(baseIDInt + 1),
+                          "AirPatrol_North", &loc1, "AirDefense", "", "", true);
+
+  void *mem2 = ::operator new(sizeof(Waypoint));
+  Waypoint *wp2 =
+      new (mem2) Waypoint(static_cast<WaypointID>(baseIDInt + 2),
+                          "AirPatrol_East", &loc2, "AirDefense", "", "", true);
+
+  void *mem3 = ::operator new(sizeof(Waypoint));
+  Waypoint *wp3 =
+      new (mem3) Waypoint(static_cast<WaypointID>(baseIDInt + 3),
+                          "AirPatrol_South", &loc3, "AirDefense", "", "", true);
+
+  void *mem4 = ::operator new(sizeof(Waypoint));
+  Waypoint *wp4 =
+      new (mem4) Waypoint(static_cast<WaypointID>(baseIDInt + 4),
+                          "AirPatrol_West", &loc4, "AirDefense", "", "", true);
+
+  // Link them in a circular path: 1->2->3->4->1
+  wp1->addLink(wp2);
+  wp2->addLink(wp3);
+  wp3->addLink(wp4);
+  wp4->addLink(wp1);
+
+  m_airPatrolPath = wp1; // Start from North waypoint
+  m_airPatrolInitialized = true;
+
+  DjLog("AICoopPlayer: Air Patrol Path created with 4 waypoints around base "
+        "(%.1f, %.1f).",
+        baseCenter.x, baseCenter.y);
+}
+
+void AICoopPlayer::manageAirUnits() {
+  // Check every 60 frames (2 seconds)
+  if (TheGameLogic->getFrame() % 60 != 0) {
+    return;
+  }
+
+  // Initialize patrol path if needed
+  if (!m_airPatrolInitialized) {
+    initializeAirPatrol();
+    if (!m_airPatrolInitialized) {
+      return; // Init failed
+    }
+  }
+
+  // Find all aircraft and assign patrol if idle
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        // Filter: Only aircraft
+        if (!obj->isKindOf(KINDOF_AIRCRAFT))
+          continue;
+
+        AIUpdateInterface *ai = obj->getAIUpdateInterface();
+        if (!ai)
+          continue;
+
+        // If idle, send on patrol
+        if (ai->isIdle()) {
+          DjLog("AICoopPlayer: Assigning air patrol to Aircraft %d (%s)",
+                obj->getID(), obj->getTemplate()->getName().str());
+          ai->aiFollowWaypointPathAsTeam(m_airPatrolPath, CMD_FROM_AI);
+        }
+      }
+    }
+  }
+}
+
+void AICoopPlayer::checkAircraftAmmo() {
+  // Check every 30 frames (1 second)
+  if (TheGameLogic->getFrame() % 30 != 0) {
+    return;
+  }
+
+  // NOTE: This is a placeholder. The engine may not expose ammo count directly.
+  // For now, we'll use a simple time-based heuristic: if aircraft has been
+  // active for awhile, send it back to airfield.
+
+  // TODO: Implement proper ammo checking if engine API supports it
+  // For now, this function is a stub for future enhancement
+}
+
+Object *AICoopPlayer::findNearestAirfield(Object *aircraft) {
+  if (!aircraft)
+    return NULL;
+
+  Object *closestAirfield = NULL;
+  Real closestDistSq = 999999.0f;
+
+  const Coord3D *aircraftPos = aircraft->getPosition();
+  if (!aircraftPos)
+    return NULL;
+
+  // Search all player's structures for an Airfield
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        // Must be a structure
+        if (!obj->isKindOf(KINDOF_STRUCTURE))
+          continue;
+
+        // Check if it's an Airfield by name
+        const ThingTemplate *tmpl = obj->getTemplate();
+        if (!tmpl)
+          continue;
+
+        const char *name = tmpl->getName().str();
+        if (!strstr(name, "Airfield") && !strstr(name, "Helipad")) {
+          continue; // Not an airfield
+        }
+
+        // Calculate distance
+        const Coord3D *airfieldPos = obj->getPosition();
+        if (!airfieldPos)
+          continue;
+
+        Real dx = aircraftPos->x - airfieldPos->x;
+        Real dy = aircraftPos->y - airfieldPos->y;
+        Real distSq = dx * dx + dy * dy;
+
+        if (distSq < closestDistSq) {
+          closestDistSq = distSq;
+          closestAirfield = obj;
+        }
+      }
+    }
+  }
+
+  return closestAirfield;
 }

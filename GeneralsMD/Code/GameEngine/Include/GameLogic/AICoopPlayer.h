@@ -79,6 +79,16 @@ protected:
   };
   ThreatType assessGlobalThreat();
 
+  // Aircraft Waypoint Management (NEW - for helicopter/aircraft patrol)
+  void initializeAirPatrol();
+  void manageAirUnits();
+  void checkAircraftAmmo();
+  Object *findNearestAirfield(Object *aircraft);
+
   // Track if we have loaded the Skirmish AI scripts/teams for the human player
   Bool m_skirmishScriptsLoaded;
+
+  // Waypoint system for air patrol (NEW)
+  class Waypoint *m_airPatrolPath; // Pointer to first waypoint in patrol chain
+  Bool m_airPatrolInitialized;
 };
