@@ -30,6 +30,10 @@
 #include "Common/Player.h"
 #include "GameLogic/AIPlayer.h"
 #include "GameLogic/AISkirmishPlayer.h"
+#include <map>
+
+// Guard command cooldown: 90 frames = ~3 seconds at 30 FPS
+static const UnsignedInt GUARD_COMMAND_COOLDOWN_FRAMES = 90;
 
 class AICoopPlayer : public AISkirmishPlayer {
   // MEMORY_POOL_GLUE_WITH_USERLOOKUP_CREATE(AICoopPlayer, "AICoopPlayer")
@@ -85,10 +89,46 @@ protected:
   void checkAircraftAmmo();
   Object *findNearestAirfield(Object *aircraft);
 
+  // Hacker Management System (NEW - 2026-01-25)
+  void autoManageHackers();
+  Coord3D findSafeHackingPosition();
+  void produceHackersIfNeeded();
+  Object *findInternetCenter();
+
+  // Weighted Scoring Hacker Placement (v2 - 2026-01-25)
+  Real evaluateHackerPosition(const Coord3D &pos, const Coord3D &baseRef);
+  Real distanceToMapBorder(const Coord3D &pos);
+  Object *findNearestDefenseStructure(const Coord3D &pos);
+  void getEnemyBaseCenter(Coord3D *outPos);
+
+  // Enhanced Hacker Placement v3 (2026-01-25)
+  Object *findNearestBarracks(const Coord3D &pos);
+  Bool isHackerInDanger(Object *hacker, Real radius);
+  Coord3D findEscapePosition(Object *hacker, const Coord3D &threatPos);
+
+  // Dedicated Hacker Barracks System (2026-01-26)
+  ObjectID m_hackerBarracksID;             // Hacker uchun maxsus barracks ID
+  Bool m_hackerBarracksBuilding;           // Qurilmoqda flag
+  UnsignedInt m_lastHackerProductionFrame; // Oxirgi hacker production vaqti
+  Coord3D
+      m_hackerBarracksBuildPos; // Qurish buyurilgan pozitsiya (detection uchun)
+
+  Object *getHackerBarracks();                // Hacker barracks ni olish
+  Bool buildHackerBarracks();                 // Hacker barracks qurish
+  void produceHackersFromDedicatedBarracks(); // Hackerlarni chiqarish
+  Int countHackers();                         // Mavjud hackerlar soni
+
   // Track if we have loaded the Skirmish AI scripts/teams for the human player
   Bool m_skirmishScriptsLoaded;
 
   // Waypoint system for air patrol (NEW)
   class Waypoint *m_airPatrolPath; // Pointer to first waypoint in patrol chain
   Bool m_airPatrolInitialized;
+
+  // Per-unit guard command cooldown tracking (2026-01-25)
+  // Maps ObjectID -> last frame when guard command was issued
+  std::map<ObjectID, UnsignedInt> m_lastGuardCommandFrame;
+
+  // Helper to clean up dead units from cooldown map
+  void cleanupGuardCooldownMap();
 };

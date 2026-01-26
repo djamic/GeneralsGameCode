@@ -101,6 +101,20 @@ void AISkirmishPlayer::processBaseBuilding(void) {
     Bool isUnderPowered = !m_player->getEnergy()->hasSufficientPower();
     Bool powerUnderConstruction = false;
 
+    // DEBUG: Dump Build List once to verify contents
+    if (TheGameLogic->getFrame() == 200) {
+      DjLog(
+          "AISkirmishPlayer::processBaseBuilding - DUMPING BUILD LIST for %s:",
+          m_player->getPlayerDisplayName().str());
+      int idx = 0;
+      for (BuildListInfo *info = m_player->getBuildList(); info;
+           info = info->getNext()) {
+        AsciiString name = info->getTemplateName();
+        DjLog("  Item %d: %s (Auto: %d)", idx++, name.str(),
+              info->isAutomaticBuild());
+      }
+    }
+
     for (BuildListInfo *info = m_player->getBuildList(); info;
          info = info->getNext()) {
       AsciiString name = info->getTemplateName();
@@ -222,11 +236,24 @@ void AISkirmishPlayer::processBaseBuilding(void) {
 
       // Make sure it is safe to build here.
       if (!isLocationSafe(info->getLocation(), curPlan)) {
-        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Location Unsafe
-        // "
-        //       "for %s",
-        //       name.str());
-        continue;
+        // SMART PLACEMENT FALLBACK: Try to find a new valid location
+        Coord3D newLoc;
+        if (findValidBuildLocation(curPlan, &newLoc)) {
+          DjLog("AISkirmishPlayer: Location Unsafe for %s. Smart Placement "
+                "found new spot at (%.1f, %.1f)",
+                name.str(), newLoc.x, newLoc.y);
+          info->setLocation(newLoc);
+          // Continue with this new location (don't skip)
+        } else {
+          if (strstr(name.str(), "Airfield") ||
+              strstr(name.str(), "SupplyCenter")) {
+            DjLog(
+                "AISkirmishPlayer::processBaseBuilding - SKIP: Location Unsafe "
+                "for %s AND Smart Placement failed.",
+                name.str());
+          }
+          continue;
+        }
       }
 
       if (info->isPriorityBuild()) {
@@ -247,9 +274,12 @@ void AISkirmishPlayer::processBaseBuilding(void) {
       }
 
       if (!info->isAutomaticBuild()) {
-        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Automatic "
-        //       "Build for %s",
-        //       name.str());
+        if (strstr(name.str(), "Airfield") ||
+            strstr(name.str(), "SupplyCenter")) {
+          DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Not Automatic "
+                "Build for %s",
+                name.str());
+        }
         continue;
       }
 
@@ -258,18 +288,42 @@ void AISkirmishPlayer::processBaseBuilding(void) {
         if (isUnderPowered) {
           queueDozer();
         }
-        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: No Dozer found "
-        //       "for %s",
-        //       name.str());
+        if (strstr(name.str(), "Airfield") ||
+            strstr(name.str(), "SupplyCenter")) {
+          DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: No Dozer found "
+                "for %s",
+                name.str());
+        }
         continue;
       }
 
       // I am using curPlan here instead of bldgPlan as implied by analysis
-      if (TheBuildAssistant->canMakeUnit(dozer, curPlan) != CANMAKE_OK) {
-        // DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Dozer cannot
-        // make "
-        //       "%s (Tech/Money/etc)",
-        //       name.str());
+      CanMakeType canMake = TheBuildAssistant->canMakeUnit(dozer, curPlan);
+      if (canMake != CANMAKE_OK) {
+        // SMART PLACEMENT FALLBACK (Secondary):
+        // If failure is NOT Money/Prereq/Queue, assume it's location/pathing
+        // related.
+        if (canMake != CANMAKE_NO_MONEY && canMake != CANMAKE_NO_PREREQ &&
+            canMake != CANMAKE_QUEUE_FULL) {
+          Coord3D newLoc;
+          if (findValidBuildLocation(curPlan, &newLoc)) {
+            DjLog("AISkirmishPlayer: canMakeUnit failed (Code %d) for %s. "
+                  "Smart Placement found new spot at (%.1f, %.1f)",
+                  canMake, name.str(), newLoc.x, newLoc.y);
+            info->setLocation(newLoc);
+            // We updated the location, but we can't 'retry' immediately in this
+            // loop easily without goto. Continuing will let the NEXT loop
+            // iteration handle it with the new valid location.
+            continue;
+          }
+        }
+
+        if (strstr(name.str(), "Airfield") ||
+            strstr(name.str(), "SupplyCenter")) {
+          DjLog("AISkirmishPlayer::processBaseBuilding - SKIP: Dozer cannot "
+                "make %s (Code %d) (Tech/Money/etc)",
+                name.str(), canMake);
+        }
         continue;
       }
 
@@ -1352,3 +1406,61 @@ void AISkirmishPlayer::xfer(Xfer *xfer) {
 /** Load post process */
 // ------------------------------------------------------------------------------------------------
 void AISkirmishPlayer::loadPostProcess(void) {}
+
+//=============================================================================
+// Smart Placement Logic (Optimized for Skirmish)
+//=============================================================================
+Bool AISkirmishPlayer::findValidBuildLocation(const ThingTemplate *tmpl,
+                                              Coord3D *outPos) {
+  if (!tmpl || !outPos)
+    return false;
+
+  Coord3D baseCenter;
+  // getBaseCenter is virtual in AIPlayer, AISkirmishPlayer overrides/inherits
+  // it. However, getBaseCenter returns bool, but needs to be accessible.
+  // Actually, AIPlayer has getBaseCenter.
+  if (!getBaseCenter(&baseCenter))
+    return false;
+
+  // Spiral Search Configuration
+  const int NUM_RINGS = 6;
+  const int ANGLES_PER_RING = 8;
+  const Real START_RADIUS = 250.0f;
+  const Real RADIUS_STEP = 100.0f;
+
+  for (int ring = 0; ring < NUM_RINGS; ++ring) {
+    Real currentRadius = START_RADIUS + (ring * RADIUS_STEP);
+
+    for (int i = 0; i < ANGLES_PER_RING; ++i) {
+      Real angle = ((2.0f * 3.14159265f) / ANGLES_PER_RING) * i;
+
+      Coord3D testPos = baseCenter;
+      testPos.x += currentRadius * cos(angle);
+      testPos.y += currentRadius * sin(angle);
+
+      if (TheTerrainLogic) {
+        testPos.z = TheTerrainLogic->getGroundHeight(testPos.x, testPos.y);
+      }
+
+      if (TheBuildAssistant) {
+        LegalBuildCode code = TheBuildAssistant->isLocationLegalToBuild(
+            &testPos, tmpl, 0.0f,
+            BuildAssistant::TERRAIN_RESTRICTIONS |
+                BuildAssistant::NO_OBJECT_OVERLAP | BuildAssistant::CLEAR_PATH,
+            NULL, m_player);
+
+        if (code == LBC_OK) {
+          *outPos = testPos;
+          DjLog("AISkirmishPlayer: Smart Placement FOUND valid location at "
+                "(%.1f, %.1f)",
+                testPos.x, testPos.y);
+          return true;
+        }
+      }
+    }
+  }
+
+  DjLog("AISkirmishPlayer: Smart Placement FAILED for %s",
+        tmpl->getName().str());
+  return false;
+}

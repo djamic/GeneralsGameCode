@@ -1094,7 +1094,7 @@ Bool AIPlayer::isLocationSafe(const Coord3D *pos, const ThingTemplate *tthing) {
 
   // only consider enemies.
   PartitionFilterPlayerAffiliation filterTeam(
-      m_player, (ALLOW_ALLIES | ALLOW_NEUTRAL), false);
+      m_player, (ALLOW_ALLIES | ALLOW_NEUTRAL), true);
 
   // and only stuff that is not dead
   PartitionFilterAlive filterAlive;

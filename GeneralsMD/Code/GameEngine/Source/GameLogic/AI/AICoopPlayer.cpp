@@ -17,11 +17,13 @@
 // Computerized opponent that cooperates with a human player.
 
 #include "GameLogic/AICoopPlayer.h"
+#include "Common/BuildAssistant.h"
 #include "Common/NameKeyGenerator.h"
 #include "Common/Player.h"
 #include "Common/PlayerList.h"
 #include "Common/Team.h"
 #include "Common/Thing.h"
+#include "Common/ThingFactory.h"
 #include "Common/ThingTemplate.h"
 #include "Common/WellKnownKeys.h"
 #include "GameLogic/AIPlayer.h"
@@ -34,8 +36,10 @@
 
 #include "Common/DjDebug.h"
 #include "GameClient/ControlBar.h"
-#include "GameLogic/TerrainLogic.h" // For Waypoint class
-#include <new>                      // For placement new
+#include "GameLogic/Module/ContainModule.h"    // For Internet Center contain
+#include "GameLogic/Module/ProductionUpdate.h" // For hacker production
+#include "GameLogic/TerrainLogic.h"            // For Waypoint class
+#include <new>                                 // For placement new
 
 AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   DjLog("AICoopPlayer created for player %d (%ls) Side: %s",
@@ -46,6 +50,14 @@ AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   // Initialize waypoint system (NEW)
   m_airPatrolPath = NULL;
   m_airPatrolInitialized = false;
+
+  // Initialize Hacker Barracks System (2026-01-26)
+  m_hackerBarracksID = INVALID_ID;
+  m_hackerBarracksBuilding = false;
+  m_lastHackerProductionFrame = 0;
+  m_hackerBarracksBuildPos.x = 0.0f;
+  m_hackerBarracksBuildPos.y = 0.0f;
+  m_hackerBarracksBuildPos.z = 0.0f;
 
   // Clear combat optimization log
   FILE *f = fopen("d:\\djcc_combat.txt", "w");
@@ -219,6 +231,16 @@ void AICoopPlayer::assistHumanPlayer() {
 
             TheTeamFactory->initTeam(teamName, m_player->getName(), false,
                                      (Dict *)dict);
+
+            // Debug Log for high-interest teams
+            if (strstr(teamName.str(), "Comanche") ||
+                strstr(teamName.str(), "Helix") ||
+                strstr(teamName.str(), "Mig") ||
+                strstr(teamName.str(), "Raptor")) {
+              DjLog("AICoopPlayer: Dedicated Air Team LOADED: %s",
+                    teamName.str());
+            }
+
             loadedTeams++;
           }
         }
@@ -263,6 +285,8 @@ void AICoopPlayer::assistHumanPlayer() {
   autoManageOverlordUpgrades();
   // 4d. Manage aircraft patrol (NEW)
   manageAirUnits();
+  // 4e. Hacker Management System (NEW - 2026-01-25)
+  autoManageHackers();
 
   // 5. Unit Production and Team Management
   // This drives the AI's ability to build units using the Skirmish Teams loaded
@@ -458,8 +482,9 @@ void AICoopPlayer::autoDefendBase() {
 }
 
 void AICoopPlayer::autoManageCombatTeams() {
-  // Performance optimization: Check every 15 frames (approx 0.5 seconds)
-  if (TheGameLogic->getFrame() % 15 != 0) {
+  // Performance optimization: Check every 30 frames (approx 1 second)
+  // Increased from 15 to reduce command frequency
+  if (TheGameLogic->getFrame() % 30 != 0) {
     return;
   }
 
@@ -477,15 +502,8 @@ void AICoopPlayer::autoManageCombatTeams() {
       if (!team || !team->isActive())
         continue;
 
-      // Skip base defense teams or non-combat teams if necessary
-      // But user wants "moving teams", so we generally check all active teams.
-
       // We need a representative unit to check proximity
       Object *representative = NULL;
-
-      // First pass: Find a representative and check if ANYONE is already
-      // fighting
-      // Bool isAlreadyFighting = false;
 
       for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
            !objIter.done(); objIter.advance()) {
@@ -502,9 +520,6 @@ void AICoopPlayer::autoManageCombatTeams() {
           // 2. Otherwise, take the first combat unit we find.
 
           bool isOverlord = false;
-          // Check for Overlord/Emperor by name or kindof (using name pattern
-          // for safety) Emperor is usually "ChinaTankEmperor", Overlord is
-          // "ChinaTankOverlord"
           const ThingTemplate *tmpl = obj->getTemplate();
           if (tmpl && (strstr(tmpl->getName().str(), "Overlord") ||
                        strstr(tmpl->getName().str(), "Emperor"))) {
@@ -513,11 +528,6 @@ void AICoopPlayer::autoManageCombatTeams() {
 
           if (isOverlord) {
             representative = obj;
-            // We found our heavy tank anchor. The search for a "better"
-            // representative is done. We continue iterating just to ensure we
-            // didn't miss anything else if needed, but 'representative' will
-            // stick to this Overlord unless we find... another Overlord?
-            // Actually, the first Overlord is fine.
             break;
           }
 
@@ -529,29 +539,15 @@ void AICoopPlayer::autoManageCombatTeams() {
       if (!representative)
         continue;
 
-      // Search for enemy near the representative
-      // Radius 250 is standard vision/aggro range
+      // Search for enemy near the representative (just to check if threat
+      // exists) Radius 250 is standard vision/aggro range
       Object *enemy =
           TheAI->findClosestEnemy(representative, 250.0f, AI::CAN_ATTACK, NULL);
 
       if (enemy) {
-        // LOGGING
-        if (combatLog) {
-          Real distSq = 0.0f;
-          const Coord3D *p1 = representative->getPosition();
-          const Coord3D *p2 = enemy->getPosition();
-          if (p1 && p2)
-            distSq = (p1->x - p2->x) * (p1->x - p2->x) +
-                     (p1->y - p2->y) * (p1->y - p2->y);
-          fprintf(combatLog,
-                  "Frame %u: Team %d guarding loc against Enemy %u (DistSq: "
-                  "%.2f)\n",
-                  TheGameLogic->getFrame(), team->getID(), enemy->getID(),
-                  distSq);
-        }
+        // Enemy sighted! Each unit attacks its OWN closest enemy
+        int commandsIssued = 0;
 
-        // Enemy sighted! GUARD!
-        // Issue guard command to all capable members
         for (DLINK_ITERATOR<Object> attackIter = team->iterate_TeamMemberList();
              !attackIter.done(); attackIter.advance()) {
           Object *attacker = attackIter.cur();
@@ -567,38 +563,86 @@ void AICoopPlayer::autoManageCombatTeams() {
           if (!ai)
             continue;
 
-          // Guard the position of the representative (front line).
-          // This ensures the entire team moves to support the engagement,
-          // preventing rear units from staying idle.
+          // FIX #1: Skip if unit is already attacking
+          // This prevents interrupting an ongoing attack
+          if (ai->isAttacking()) {
+            continue;
+          }
 
-          // Fix for "stuttering":
-          // If already guarding this location (or very close), DO NOT re-issue
-          // command. Re-issuing causes the unit to stop, think, and restart
-          // pathfinding.
-          bool alreadyGuarding = false;
-          if (ai->getGuardTargetType() == GUARDTARGET_LOCATION) {
-            const Coord3D *currentGuardPos = ai->getGuardLocation();
-            const Coord3D *targetPos = representative->getPosition();
-            if (currentGuardPos && targetPos) {
-              Real dX = currentGuardPos->x - targetPos->x;
-              Real dY = currentGuardPos->y - targetPos->y;
-              // If within 20 units (very close), consider it the same order
-              if ((dX * dX + dY * dY) < 400.0f) {
-                alreadyGuarding = true;
-              }
+          // FIX #6: Per-unit cooldown check (2026-01-25)
+          // Skip if this unit received an attack command recently
+          ObjectID attackerID = attacker->getID();
+          UnsignedInt currentFrame = TheGameLogic->getFrame();
+          std::map<ObjectID, UnsignedInt>::iterator cooldownIt =
+              m_lastGuardCommandFrame.find(attackerID);
+          if (cooldownIt != m_lastGuardCommandFrame.end()) {
+            if (currentFrame - cooldownIt->second <
+                GUARD_COMMAND_COOLDOWN_FRAMES) {
+              continue; // Still in cooldown, skip this unit
             }
           }
 
-          if (!alreadyGuarding) {
-            ai->aiGuardPosition(representative->getPosition(), GUARDMODE_NORMAL,
-                                CMD_FROM_AI);
+          // FIX #7: Each unit finds its OWN closest enemy (2026-01-25)
+          // This prevents units from running through enemy lines
+          Object *myEnemy =
+              TheAI->findClosestEnemy(attacker, 250.0f, AI::CAN_ATTACK, NULL);
+
+          if (myEnemy) {
+            // Attack my closest enemy, not the team's enemy
+            ai->aiAttackObject(myEnemy, INT_MAX, CMD_FROM_AI);
+
+            // Update cooldown map
+            m_lastGuardCommandFrame[attackerID] = currentFrame;
+            commandsIssued++;
           }
+        }
+
+        // FIX #5: Only log when commands were actually issued
+        if (combatLog && commandsIssued > 0) {
+          Real distSq = 0.0f;
+          const Coord3D *p1 = representative->getPosition();
+          const Coord3D *p2 = enemy->getPosition();
+          if (p1 && p2)
+            distSq = (p1->x - p2->x) * (p1->x - p2->x) +
+                     (p1->y - p2->y) * (p1->y - p2->y);
+          fprintf(
+              combatLog,
+              "Frame %u: Team %d issued %d ATTACK commands against Enemy %u "
+              "(DistSq: "
+              "%.2f)\n",
+              TheGameLogic->getFrame(), team->getID(), commandsIssued,
+              enemy->getID(), distSq);
         }
       }
     }
   }
   if (combatLog)
     fclose(combatLog);
+
+  // Periodically clean up the cooldown map (every 300 frames = 10 seconds)
+  if (TheGameLogic->getFrame() % 300 == 0) {
+    cleanupGuardCooldownMap();
+  }
+}
+
+//=============================================================================
+// Guard Cooldown Map Cleanup
+//=============================================================================
+
+void AICoopPlayer::cleanupGuardCooldownMap() {
+  UnsignedInt currentFrame = TheGameLogic->getFrame();
+
+  // Remove entries that are too old (older than 2x cooldown period)
+  // This prevents the map from growing unbounded with dead unit IDs
+  std::map<ObjectID, UnsignedInt>::iterator it =
+      m_lastGuardCommandFrame.begin();
+  while (it != m_lastGuardCommandFrame.end()) {
+    if (currentFrame - it->second > GUARD_COMMAND_COOLDOWN_FRAMES * 2) {
+      it = m_lastGuardCommandFrame.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 //=============================================================================
@@ -845,6 +889,152 @@ void AICoopPlayer::updateBuildPriorities() {
             DjLog("AICoopPlayer: Reactive Defense - Rushing Tech %s to counter "
                   "Vehicle Threat.",
                   name.str());
+          }
+        }
+      }
+
+      // PRIORITIZE SUPPLY CENTER: Basic economy and prereq for
+      // Airfield/WarFactory
+      if (money > 2000) {
+        bool isSupply = strstr(name.str(), "SupplyCenter");
+        if (isSupply) {
+          int supplyCount = countStructures("SupplyCenter");
+          int supplyBuilding = countStructuresUnderConstruction("SupplyCenter");
+          if ((supplyCount + supplyBuilding) == 0) {
+            if (TheGameLogic->getFrame() % 300 == 0) {
+              DjLog("AICoopPlayer: Strategy - Prioritizing SupplyCenter %s "
+                    "(Money > 2000)",
+                    name.str());
+            }
+            // It's already set to AutomaticBuild=true by the default else
+            // block, but this confirms our intent and ensures we track it.
+          }
+        }
+      }
+
+      // PRIORITIZE AIRFIELD: If we have money, build Airfield ASAP to enable
+      // helicopters.
+      if (money > 3000) {
+        bool isAirfield =
+            strstr(name.str(), "Airfield") || strstr(name.str(), "Helipad");
+        if (isAirfield) {
+          // Check if we already have one
+          int airCount =
+              countStructures("Airfield") + countStructures("Helipad");
+          int airBuilding = countStructuresUnderConstruction("Airfield") +
+                            countStructuresUnderConstruction("Helipad");
+
+          if ((airCount + airBuilding) == 0) {
+            // None found! Prioritize this build!
+            // Note: 'markPriorityBuild()' is not available on BuildListInfo
+            // directly in this scope easily? Actually it is:
+            // info->markPriorityBuild() usually exists or accessible via
+            // specific helpers AISkirmishPlayer uses it. Let's check
+            // BuildListInfo in BuildAssistant.h or simply assume logic.
+
+            // Wait, AISkirmishPlayer uses: m_player->addToPriorityBuildList...
+            // info->isPriorityBuild() is a check.
+
+            // Let's assume we can set it via scripts or just ensure it's
+            // automatic. Since we are in Assist mode, we rely on standard build
+            // loop picking it up. To force it, we might need a stronger signal,
+            // but for now ensure it is AUTOMATIC. It IS automatic (set above).
+
+            // Let's Log it.
+            if (TheGameLogic->getFrame() % 300 == 0) {
+              DjLog("AICoopPlayer: Strategy - Prioritizing Airfield %s (Money "
+                    "> 3000)",
+                    name.str());
+            }
+            // If we could 'force' it, we would. But 'AutomaticBuild=true' is
+            // usually enough IF the build assistant reaches it.
+          }
+        }
+      }
+    }
+
+    // CRITICAL FIX: Ensure SupplyCenter is in the build list.
+    // If it's missing, the Dozer can't build it, and Airfield stays blocked.
+    // We check this periodically (e.g. Frame 200, then rarely) to ensure
+    // injection happens.
+    if (TheGameLogic->getFrame() == 200 ||
+        (TheGameLogic->getFrame() % 900 == 0)) {
+      bool hasSupplyInList = false;
+      for (BuildListInfo *info = m_player->getBuildList(); info;
+           info = info->getNext()) {
+        if (strstr(info->getTemplateName().str(), "SupplyCenter")) {
+          hasSupplyInList = true;
+          break;
+        }
+      }
+
+      if (!hasSupplyInList) {
+        // It's missing! Force inject it.
+        DjLog("AICoopPlayer: CRITICAL - SupplyCenter missing from Build List "
+              "for %s. Injecting it!",
+              m_player->getPlayerDisplayName().str());
+
+        // Determine template name based on side
+        AsciiString supplyName;
+        if (strstr(m_player->getSide().str(), "China"))
+          supplyName = "ChinaSupplyCenter";
+        else if (strstr(m_player->getSide().str(), "America"))
+          supplyName = "AmericaSupplyCenter";
+        else if (strstr(m_player->getSide().str(), "GLA"))
+          supplyName = "GLASupplyStash"; // Or Chem_GLASupplyStash, etc.
+
+        if (!supplyName.isEmpty()) {
+          const ThingTemplate *t = TheThingFactory->findTemplate(supplyName);
+          if (t) {
+            // Create new info.
+            // BuildListInfo::operator new is protected. Duplicate existing
+            // valid item.
+            BuildListInfo *validItem = m_player->getBuildList();
+            if (validItem) {
+              BuildListInfo *newInfo = validItem->duplicate();
+
+              // Reset and Configure
+              newInfo->setTemplateName(supplyName);
+              newInfo->setBuildingName(supplyName);
+              newInfo->setAutomaticBuild(true);
+              newInfo->setNextBuildList(NULL);
+              newInfo->setInitiallyBuilt(false);
+              newInfo->setNumRebuilds(BuildListInfo::UNLIMITED_REBUILDS);
+
+              // Use Smart Placement (Spiral Search)
+              Coord3D bestLoc;
+              if (findValidBuildLocation(t, &bestLoc)) {
+                newInfo->setLocation(bestLoc);
+                DjLog("AICoopPlayer: Injected SupplyCenter at VALID location "
+                      "(%.1f, %.1f)",
+                      bestLoc.x, bestLoc.y);
+              } else {
+                DjLog("AICoopPlayer: WARN - Smart Placement failed! Defaulting "
+                      "to offset.");
+                Coord3D baseCenter;
+                if (getBaseCenter(&baseCenter)) {
+                  baseCenter.x += 300.0f;
+                  baseCenter.y += 300.0f;
+                  newInfo->setLocation(baseCenter);
+                }
+              }
+
+              // Append to end
+              BuildListInfo *last = m_player->getBuildList();
+              if (last) {
+                while (last->getNext())
+                  last = last->getNext();
+                last->setNextBuildList(newInfo);
+              }
+              DjLog("AICoopPlayer: Injected %s into build list.",
+                    supplyName.str());
+            } else {
+              DjLog("AICoopPlayer: Cannot inject %s - BuildList empty!",
+                    supplyName.str());
+            }
+          } else {
+            DjLog("AICoopPlayer: Failed to find template %s for injection.",
+                  supplyName.str());
           }
         }
       }
@@ -1144,4 +1334,721 @@ Object *AICoopPlayer::findNearestAirfield(Object *aircraft) {
   }
 
   return closestAirfield;
+}
+
+//=============================================================================
+// Smart Placement Logic (NEW)
+//=============================================================================
+
+//=============================================================================
+// Hacker Management System (NEW - 2026-01-25)
+// Auto-manages hackers: gathers to safe zone, starts hacking, produces more
+//=============================================================================
+
+Object *AICoopPlayer::findInternetCenter() {
+  // Find player's Internet Center using correct API
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        if (obj->isKindOf(KINDOF_FS_INTERNET_CENTER)) {
+          return obj;
+        }
+      }
+    }
+  }
+  return NULL;
+}
+
+//=============================================================================
+// Weighted Scoring Hacker Placement v2 (2026-01-25)
+// S = (W1 × Dthreat) + (W2 × Dborder) + (W3 × Ddefense)
+//=============================================================================
+
+void AICoopPlayer::getEnemyBaseCenter(Coord3D *outPos) {
+  // Get current enemy from parent class
+  Player *enemy = getAiEnemy();
+  if (!enemy) {
+    outPos->x = 2000.0f;
+    outPos->y = 2000.0f;
+    outPos->z = 0.0f;
+    return;
+  }
+
+  // Try to get enemy's base center
+  Region2D bounds;
+  getPlayerStructureBounds(&bounds, enemy->getPlayerIndex());
+  outPos->x = bounds.lo.x + bounds.width() / 2;
+  outPos->y = bounds.lo.y + bounds.height() / 2;
+  outPos->z = 0.0f;
+}
+
+Real AICoopPlayer::distanceToMapBorder(const Coord3D &pos) {
+  // Get map bounds
+  Region3D mapBounds;
+  TheTerrainLogic->getMaximumPathfindExtent(&mapBounds);
+
+  // Calculate distance to each border
+  Real distLeft = pos.x - mapBounds.lo.x;
+  Real distRight = mapBounds.hi.x - pos.x;
+  Real distBottom = pos.y - mapBounds.lo.y;
+  Real distTop = mapBounds.hi.y - pos.y;
+
+  // Return minimum distance to any border
+  Real minDist = distLeft;
+  if (distRight < minDist)
+    minDist = distRight;
+  if (distBottom < minDist)
+    minDist = distBottom;
+  if (distTop < minDist)
+    minDist = distTop;
+
+  return minDist;
+}
+
+Object *AICoopPlayer::findNearestDefenseStructure(const Coord3D &pos) {
+  Object *nearest = NULL;
+  Real nearestDistSq = 99999999.0f;
+
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        // Check if it's a defense structure
+        if (!obj->isKindOf(KINDOF_STRUCTURE))
+          continue;
+
+        // Check for defense-type structures
+        const ThingTemplate *tmpl = obj->getTemplate();
+        if (!tmpl)
+          continue;
+        const char *name = tmpl->getName().str();
+
+        // China: Bunker, Gatling Cannon
+        // USA: Patriot
+        // GLA: Tunnel Network, Stinger Site
+        if (!strstr(name, "Bunker") && !strstr(name, "Gatling") &&
+            !strstr(name, "Patriot") && !strstr(name, "Tunnel") &&
+            !strstr(name, "Stinger") && !strstr(name, "Defense")) {
+          continue;
+        }
+
+        const Coord3D *objPos = obj->getPosition();
+        if (!objPos)
+          continue;
+
+        Real dx = pos.x - objPos->x;
+        Real dy = pos.y - objPos->y;
+        Real distSq = dx * dx + dy * dy;
+
+        if (distSq < nearestDistSq) {
+          nearestDistSq = distSq;
+          nearest = obj;
+        }
+      }
+    }
+  }
+
+  return nearest;
+}
+
+Real AICoopPlayer::evaluateHackerPosition(const Coord3D &pos,
+                                          const Coord3D &baseRef) {
+  // Weights
+  const Real W_OPPOSITE = 3.0f; // HIGHEST: Being on opposite side from enemy!
+  const Real W_AIR = 1.5f;      // Air corridor distance
+  const Real W_BORDER = 0.5f;   // Border proximity
+  const Real W_DEFENSE = 0.8f;  // Defense proximity
+
+  // Get enemy base center
+  Coord3D enemyBase;
+  getEnemyBaseCenter(&enemyBase);
+
+  //=========================================================================
+  // D_OPPOSITE: CRITICAL - Position should be on OPPOSITE side from enemy
+  //=========================================================================
+  // Vector from base to enemy
+  Real toEnemyX = enemyBase.x - baseRef.x;
+  Real toEnemyY = enemyBase.y - baseRef.y;
+  Real toEnemyLen = sqrtf(toEnemyX * toEnemyX + toEnemyY * toEnemyY);
+
+  // Vector from base to candidate position
+  Real toPosX = pos.x - baseRef.x;
+  Real toPosY = pos.y - baseRef.y;
+  Real toPosLen = sqrtf(toPosX * toPosX + toPosY * toPosY);
+
+  Real oppositeScore = 0.0f;
+  if (toEnemyLen > 1.0f && toPosLen > 1.0f) {
+    // Normalize vectors
+    toEnemyX /= toEnemyLen;
+    toEnemyY /= toEnemyLen;
+    toPosX /= toPosLen;
+    toPosY /= toPosLen;
+
+    // Dot product: -1 = opposite, +1 = same direction
+    Real dot = toEnemyX * toPosX + toEnemyY * toPosY;
+
+    // Convert: -1 -> +200 (opposite = BEST), +1 -> 0 (same direction = BAD)
+    oppositeScore = (1.0f - dot) * 100.0f * W_OPPOSITE;
+  }
+
+  //=========================================================================
+  // D_AIR: Distance from air corridor (perpendicular)
+  //=========================================================================
+  Real airDirX = baseRef.x - enemyBase.x;
+  Real airDirY = baseRef.y - enemyBase.y;
+  Real airLen = sqrtf(airDirX * airDirX + airDirY * airDirY);
+
+  Real airDist = 0.0f;
+  if (airLen > 1.0f) {
+    airDirX /= airLen;
+    airDirY /= airLen;
+    Real toPointX = pos.x - enemyBase.x;
+    Real toPointY = pos.y - enemyBase.y;
+    airDist = fabsf(toPointX * (-airDirY) + toPointY * airDirX);
+  }
+  Real airScore = airDist * W_AIR;
+
+  //=========================================================================
+  // D_BORDER: Distance to map border (closer = better)
+  //=========================================================================
+  Real borderDist = distanceToMapBorder(pos);
+  Real borderScore = 0.0f;
+  if (borderDist < 150.0f) {
+    borderScore = (150.0f - borderDist) * W_BORDER;
+  }
+
+  //=========================================================================
+  // D_DEFENSE: Distance to nearest defense structure
+  //=========================================================================
+  Real defenseScore = 0.0f;
+  Object *defense = findNearestDefenseStructure(pos);
+  if (defense) {
+    const Coord3D *defPos = defense->getPosition();
+    if (defPos) {
+      Real dx = pos.x - defPos->x;
+      Real dy = pos.y - defPos->y;
+      Real defenseDist = sqrtf(dx * dx + dy * dy);
+      if (defenseDist < 250.0f) {
+        defenseScore = (250.0f - defenseDist) * W_DEFENSE;
+      }
+    }
+  }
+
+  Real totalScore = oppositeScore + airScore + borderScore + defenseScore;
+  return totalScore;
+}
+
+Coord3D AICoopPlayer::findSafeHackingPosition() {
+  Coord3D safePos = m_baseCenter;
+
+  // Find nearest barracks as reference base (for expansion support)
+  Coord3D baseRef = m_baseCenter;
+  Object *nearestBarracks = findNearestBarracks(m_baseCenter);
+  if (nearestBarracks) {
+    const Coord3D *barracksPos = nearestBarracks->getPosition();
+    if (barracksPos) {
+      baseRef = *barracksPos;
+    }
+  }
+
+  // Get base radius (from AISkirmishPlayer)
+  Real radius = m_baseRadius + 60.0f; // Slightly outside base
+
+  // Generate 8 candidate positions around base reference (every 45 degrees)
+  Coord3D candidates[8];
+  Real bestScore = -99999.0f;
+  int bestIdx = 0;
+
+  for (int i = 0; i < 8; i++) {
+    Real angle = i * (PI / 4.0f); // 0, 45, 90, 135, 180, 225, 270, 315 degrees
+    candidates[i].x = baseRef.x + cosf(angle) * radius;
+    candidates[i].y = baseRef.y + sinf(angle) * radius;
+    candidates[i].z = baseRef.z;
+
+    Real score = evaluateHackerPosition(candidates[i], baseRef);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+
+  safePos = candidates[bestIdx];
+
+  // Log the decision
+  if (TheGameLogic->getFrame() % 300 == 0) {
+    DjLog("AICoopPlayer: Best hacker position at (%.0f, %.0f) score=%.1f "
+          "baseRef=(%.0f,%.0f)",
+          safePos.x, safePos.y, bestScore, baseRef.x, baseRef.y);
+  }
+
+  return safePos;
+}
+
+void AICoopPlayer::produceHackersIfNeeded() {
+  // Only for China faction
+  AsciiString sideName = m_player->getSide();
+  if (!strstr(sideName.str(), "China")) {
+    return;
+  }
+
+  // Log every 20 seconds (placeholder - full production logic TODO)
+  if (TheGameLogic->getFrame() % 600 == 0) {
+    DjLog("AICoopPlayer: Hacker production check (manual production only for "
+          "now).");
+  }
+}
+
+void AICoopPlayer::autoManageHackers() {
+  // Only manage every 60 frames (2 seconds)
+  if (TheGameLogic->getFrame() % 60 != 0) {
+    return;
+  }
+
+  // Produce hackers from dedicated barracks (builds barracks if needed)
+  produceHackersFromDedicatedBarracks();
+
+  // Find Internet Center if it exists
+  Object *internetCenter = findInternetCenter();
+
+  // Find safe hacking position (fallback if no Internet Center)
+  Coord3D safePos = findSafeHackingPosition();
+
+  // Iterate all player's hackers using correct API
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        // Must be a hacker
+        if (!obj->isKindOf(KINDOF_MONEY_HACKER)) {
+          continue;
+        }
+
+        AIUpdateInterface *ai = obj->getAIUpdateInterface();
+        if (!ai)
+          continue;
+
+        // PRIORITY: Check for nearby threats - escape immediately!
+        const Coord3D *hackerPos = obj->getPosition();
+        if (hackerPos && isHackerInDanger(obj, 200.0f)) {
+          // Find threat position for escape direction
+          Object *threat =
+              TheAI->findClosestEnemy(obj, 200.0f, AI::CAN_ATTACK, NULL);
+          if (threat) {
+            const Coord3D *threatPos = threat->getPosition();
+            if (threatPos) {
+              Coord3D escapePos = findEscapePosition(obj, *threatPos);
+              ai->aiMoveToPosition(&escapePos, CMD_FROM_AI);
+              DjLog("AICoopPlayer: Hacker %u ESCAPING from threat at "
+                    "(%.0f,%.0f)!",
+                    obj->getID(), threatPos->x, threatPos->y);
+              continue; // Skip other actions - escape is priority
+            }
+          }
+        }
+
+        // Skip if not idle (already doing something)
+        if (!ai->isIdle()) {
+          continue;
+        }
+
+        // Skip if already in Internet Center
+        if (obj->getContainedBy() != NULL) {
+          continue;
+        }
+
+        // Check cooldown (prevent spam)
+        ObjectID hackerID = obj->getID();
+        UnsignedInt currentFrame = TheGameLogic->getFrame();
+        std::map<ObjectID, UnsignedInt>::iterator cooldownIt =
+            m_lastGuardCommandFrame.find(hackerID);
+        if (cooldownIt != m_lastGuardCommandFrame.end()) {
+          if (currentFrame - cooldownIt->second < 180) { // 6 second cooldown
+            continue;
+          }
+        }
+
+        // If Internet Center exists and has space, enter it
+        if (internetCenter) {
+          ContainModuleInterface *contain = internetCenter->getContain();
+          if (contain) {
+            int freeSlots =
+                contain->getContainMax() - contain->getContainCount();
+            if (freeSlots > 0) {
+              ai->aiEnter(internetCenter, CMD_FROM_AI);
+              m_lastGuardCommandFrame[hackerID] = currentFrame;
+              DjLog("AICoopPlayer: Sending Hacker %u to Internet Center "
+                    "(slots: %d)",
+                    hackerID, freeSlots);
+              continue;
+            }
+          }
+        }
+
+        // No Internet Center or full - go to safe position and hack
+        if (hackerPos) {
+          Real dx = hackerPos->x - safePos.x;
+          Real dy = hackerPos->y - safePos.y;
+          Real distSq = dx * dx + dy * dy;
+
+          if (distSq > 22500.0f) { // More than 150 units away - move closer
+            // Move to safe position first
+            ai->aiMoveToPosition(&safePos, CMD_FROM_AI);
+            m_lastGuardCommandFrame[hackerID] = currentFrame;
+            DjLog(
+                "AICoopPlayer: Moving Hacker %u to safe position (dist: %.1f)",
+                hackerID, sqrtf(distSq));
+          } else {
+            // Close enough (within 100 units) - start hacking
+            ai->aiHackInternet(CMD_FROM_AI);
+            m_lastGuardCommandFrame[hackerID] = currentFrame;
+            DjLog("AICoopPlayer: Hacker %u starting to hack at safe position",
+                  hackerID);
+          }
+        }
+      }
+    }
+  }
+}
+
+//=============================================================================
+// Enhanced Hacker Placement v3 (2026-01-25)
+// - Nearest Barracks as reference
+// - Threat detection and escape
+// - Higher air corridor priority
+//=============================================================================
+
+Object *AICoopPlayer::findNearestBarracks(const Coord3D &pos) {
+  Object *nearest = NULL;
+  Real nearestDistSq = 99999999.0f;
+
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        if (!obj->isKindOf(KINDOF_STRUCTURE))
+          continue;
+
+        const ThingTemplate *tmpl = obj->getTemplate();
+        if (!tmpl)
+          continue;
+        const char *name = tmpl->getName().str();
+
+        // Find Barracks structures
+        if (!strstr(name, "Barracks")) {
+          continue;
+        }
+
+        const Coord3D *objPos = obj->getPosition();
+        if (!objPos)
+          continue;
+
+        Real dx = pos.x - objPos->x;
+        Real dy = pos.y - objPos->y;
+        Real distSq = dx * dx + dy * dy;
+
+        if (distSq < nearestDistSq) {
+          nearestDistSq = distSq;
+          nearest = obj;
+        }
+      }
+    }
+  }
+
+  return nearest;
+}
+
+Bool AICoopPlayer::isHackerInDanger(Object *hacker, Real radius) {
+  if (!hacker)
+    return false;
+
+  const Coord3D *hackerPos = hacker->getPosition();
+  if (!hackerPos)
+    return false;
+
+  // Find closest enemy within radius
+  Object *threat =
+      TheAI->findClosestEnemy(hacker, radius, AI::CAN_ATTACK, NULL);
+
+  if (threat) {
+    DjLog("AICoopPlayer: Hacker %u in DANGER! Enemy nearby.", hacker->getID());
+    return true;
+  }
+
+  return false;
+}
+
+Coord3D AICoopPlayer::findEscapePosition(Object *hacker,
+                                         const Coord3D &threatPos) {
+  Coord3D escapePos = m_baseCenter; // Default: run to base center
+
+  const Coord3D *hackerPos = hacker->getPosition();
+  if (!hackerPos)
+    return escapePos;
+
+  // Calculate direction away from threat
+  Real dirX = hackerPos->x - threatPos.x;
+  Real dirY = hackerPos->y - threatPos.y;
+  Real len = sqrtf(dirX * dirX + dirY * dirY);
+
+  if (len > 1.0f) {
+    dirX /= len;
+    dirY /= len;
+  } else {
+    // Threat at same position - run towards base center
+    dirX = m_baseCenter.x - hackerPos->x;
+    dirY = m_baseCenter.y - hackerPos->y;
+    len = sqrtf(dirX * dirX + dirY * dirY);
+    if (len > 1.0f) {
+      dirX /= len;
+      dirY /= len;
+    }
+  }
+
+  // Run 150 units away from threat
+  escapePos.x = hackerPos->x + dirX * 150.0f;
+  escapePos.y = hackerPos->y + dirY * 150.0f;
+  escapePos.z = hackerPos->z;
+
+  return escapePos;
+}
+
+//=============================================================================
+// Dedicated Hacker Barracks System (2026-01-26)
+//=============================================================================
+
+Object *AICoopPlayer::getHackerBarracks() {
+  if (m_hackerBarracksID != INVALID_ID) {
+    Object *barracks = TheGameLogic->findObjectByID(m_hackerBarracksID);
+    if (barracks && !barracks->isEffectivelyDead()) {
+      // Barracks tirik va mavjud
+      return barracks;
+    }
+    // Barracks buzilgan yoki yo'q - ID ni tozalash
+    m_hackerBarracksID = INVALID_ID;
+    m_hackerBarracksBuilding = false;
+  }
+  return NULL;
+}
+
+Int AICoopPlayer::countHackers() {
+  Int count = 0;
+
+  Player::PlayerTeamList::const_iterator it;
+  for (it = m_player->getPlayerTeams()->begin();
+       it != m_player->getPlayerTeams()->end(); ++it) {
+    for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+         !teamIter.done(); teamIter.advance()) {
+      Team *team = teamIter.cur();
+      if (!team)
+        continue;
+
+      for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+           !objIter.done(); objIter.advance()) {
+        Object *obj = objIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+
+        if (obj->isKindOf(KINDOF_MONEY_HACKER)) {
+          count++;
+        }
+      }
+    }
+  }
+
+  return count;
+}
+
+Bool AICoopPlayer::buildHackerBarracks() {
+  // Faqat China uchun
+  AsciiString sideName = m_player->getSide();
+  if (!strstr(sideName.str(), "China")) {
+    return false;
+  }
+
+  // Allaqachon bor yoki qurilmoqda
+  if (getHackerBarracks() != NULL || m_hackerBarracksBuilding) {
+    return false;
+  }
+
+  // Xavfsiz joyni topish (hacker pozitsiyasi yaqinida)
+  Coord3D buildPos = findSafeHackingPosition();
+  // Biroz offset qo'shish (barracks hackerlardan uzoqroq bo'lsin)
+  buildPos.x += 60.0f;
+  buildPos.y += 30.0f;
+
+  // Build list ga qo'shish
+  m_player->addToPriorityBuildList(AsciiString("ChinaBarracks"), &buildPos,
+                                   0.0f);
+  m_hackerBarracksBuilding = true;
+  m_hackerBarracksBuildPos = buildPos; // Pozitsiyani saqlash!
+
+  DjLog("AICoopPlayer: Building dedicated Hacker Barracks at (%.0f, %.0f)",
+        buildPos.x, buildPos.y);
+  return true;
+}
+
+void AICoopPlayer::produceHackersFromDedicatedBarracks() {
+  // Faqat China uchun
+  AsciiString sideName = m_player->getSide();
+  if (!strstr(sideName.str(), "China")) {
+    return;
+  }
+
+  // Har 3 soniyada tekshirish
+  UnsignedInt currentFrame = TheGameLogic->getFrame();
+  if (currentFrame - m_lastHackerProductionFrame < 90) {
+    return;
+  }
+
+  // Hacker barracks bormi?
+  Object *hackerBarracks = getHackerBarracks();
+  if (!hackerBarracks) {
+    // Yo'q - qurishni boshlash (agar qurilmayotgan bo'lsa)
+    if (!m_hackerBarracksBuilding) {
+      buildHackerBarracks();
+    }
+
+    // Ikkinchi barracksni hacker barracks sifatida tanlash
+    // (Birinchisi - asosiy infantry, ikkinchisi - hackerlar uchun)
+    if (m_hackerBarracksBuilding) {
+      std::vector<Object *> barrackslist;
+
+      // Barcha barrackslarni yig'ish
+      Player::PlayerTeamList::const_iterator it;
+      for (it = m_player->getPlayerTeams()->begin();
+           it != m_player->getPlayerTeams()->end(); ++it) {
+        for (DLINK_ITERATOR<Team> teamIter = (*it)->iterate_TeamInstanceList();
+             !teamIter.done(); teamIter.advance()) {
+          Team *team = teamIter.cur();
+          if (!team)
+            continue;
+
+          for (DLINK_ITERATOR<Object> objIter = team->iterate_TeamMemberList();
+               !objIter.done(); objIter.advance()) {
+            Object *obj = objIter.cur();
+            if (!obj || obj->isEffectivelyDead())
+              continue;
+            if (!obj->isKindOf(KINDOF_STRUCTURE))
+              continue;
+
+            const ThingTemplate *tmpl = obj->getTemplate();
+            if (!tmpl)
+              continue;
+
+            // Barracks ekanini tekshirish
+            if (strstr(tmpl->getName().str(), "Barracks")) {
+              barrackslist.push_back(obj);
+            }
+          }
+        }
+      }
+
+      // Agar 2 yoki undan ko'p barracks bo'lsa, ikkinchisini tanlash
+      if (barrackslist.size() >= 2) {
+        Object *hackerBarr = barrackslist[1]; // Ikkinchi barracks (index 1)
+        m_hackerBarracksID = hackerBarr->getID();
+        m_hackerBarracksBuilding = false;
+        const Coord3D *pos = hackerBarr->getPosition();
+        DjLog("AICoopPlayer: Found Hacker Barracks (2nd of %d) ID=%u at "
+              "(%.0f,%.0f)",
+              (int)barrackslist.size(), m_hackerBarracksID, pos ? pos->x : 0.0f,
+              pos ? pos->y : 0.0f);
+      } else {
+        // Hali faqat bitta barracks bor - kutish
+        DjLog("AICoopPlayer: Waiting for 2nd barracks (current count: %d)",
+              (int)barrackslist.size());
+      }
+    }
+    return;
+  }
+
+  // Production interface
+  ProductionUpdateInterface *production =
+      hackerBarracks->getProductionUpdateInterface();
+  if (!production)
+    return;
+
+  // Navbatda nimadur bormi?
+  if (production->getProductionCount() > 0) {
+    return; // Allaqachon production qilmoqda
+  }
+
+  // Pul asosida production boshqarish:
+  // - Pul >= 60000 bo'lsa TO'XTAT (yetarli pul bor)
+  // - Pul < 20000 bo'lsa DAVOM ET (pul kerak)
+  int currentMoney = m_player->getMoney()->countMoney();
+  if (currentMoney >= 60000) {
+    return; // Pul yetarli - hacker kerak emas
+  }
+
+  // Hacker uchun minimal pul (625 + buffer)
+  if (currentMoney < 700) {
+    return; // Hacker sotib olishga pul yetmaydi
+  }
+
+  // Hackerlar soni tekshirish (maksimal limit yo'q - pul bilan boshqariladi)
+
+  // Hacker template topish
+  const ThingTemplate *hackerTemplate =
+      TheThingFactory->findTemplate(AsciiString("ChinaInfantryHacker"));
+  if (!hackerTemplate) {
+    DjLog("AICoopPlayer: ERROR - ChinaInfantryHacker template not found!");
+    return;
+  }
+
+  // Production qilish
+  ProductionID prodID = production->requestUniqueUnitID();
+  if (production->queueCreateUnit(hackerTemplate, prodID)) {
+    m_lastHackerProductionFrame = currentFrame;
+    int hackerCount = countHackers();
+    DjLog(
+        "AICoopPlayer: Producing Hacker %d (money: %d) from dedicated barracks",
+        hackerCount + 1, currentMoney);
+  }
 }
