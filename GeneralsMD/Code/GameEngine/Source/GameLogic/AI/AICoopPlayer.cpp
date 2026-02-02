@@ -26,20 +26,26 @@
 #include "Common/ThingFactory.h"
 #include "Common/ThingTemplate.h"
 #include "Common/WellKnownKeys.h"
+#include "GameLogic/AI.h"         // For TheAI and Pathfinding
+#include "GameLogic/AIPathfind.h" // For Path/PathNode
 #include "GameLogic/AIPlayer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Object.h"
 #include "GameLogic/ScriptEngine.h"
 #include "GameLogic/SidesList.h"
-#include "PreRTS.h"
+#include "PreRTS.h" // Must be first
+
+// #include "PreRTS.h" // MOVED TO TOP
 
 #include "Common/DjDebug.h"
 #include "GameClient/ControlBar.h"
 #include "GameLogic/Module/ContainModule.h"    // For Internet Center contain
 #include "GameLogic/Module/ProductionUpdate.h" // For hacker production
 #include "GameLogic/TerrainLogic.h"            // For Waypoint class
+#include <algorithm>                           // For std::sort
 #include <new>                                 // For placement new
+#include <vector>                              // For capture system
 
 AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   DjLog("AICoopPlayer created for player %d (%ls) Side: %s",
@@ -58,6 +64,10 @@ AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   m_hackerBarracksBuildPos.x = 0.0f;
   m_hackerBarracksBuildPos.y = 0.0f;
   m_hackerBarracksBuildPos.z = 0.0f;
+
+  // Initialize Tech Building Capture System (2026-01-29)
+  m_lastCaptureCheckFrame = 0;
+  // m_buildingToSoldier map is auto-initialized empty
 
   // Clear combat optimization log
   FILE *f = fopen("d:\\djcc_combat.txt", "w");
@@ -92,6 +102,10 @@ void AICoopPlayer::update() {
 
   // Add coop-specific behavior
   attemptCoopBehavior();
+
+  // TECH BUILDING CAPTURE (Auto-Capture)
+  // Run this periodically to capture oil derricks, etc.
+  autoCaptureTechBuildings();
 }
 
 Player *AICoopPlayer::findHumanAlly() {
@@ -160,11 +174,13 @@ void AICoopPlayer::acquireEnemy() {
 //=============================================================================
 
 void AICoopPlayer::assistHumanPlayer() {
-  // Log assist mode activity periodically
   if (TheGameLogic->getFrame() % 1800 == 0) {
     DjLog("AICoopPlayer::assistHumanPlayer - Assisting player %d",
           m_player->getPlayerIndex());
   }
+
+  // TECH BUILDING CAPTURE (Auto-Capture for Human Assist Mode)
+  autoCaptureTechBuildings();
 
   // Ensure BuildList is loaded for human player
   // Ensure BuildList is loaded for human player
@@ -265,9 +281,6 @@ void AICoopPlayer::assistHumanPlayer() {
 
   // 1. Auto-build structures (using base AI logic with our priority system)
   // Use doBaseBuilding() which handles timing checks correctly
-  DjLog("AICoopPlayer::assistHumanPlayer - BEFORE doBaseBuilding: "
-        "m_structureTimer=%d, m_readyToBuildStructure=%d",
-        m_structureTimer, m_readyToBuildStructure ? 1 : 0);
   doBaseBuilding();
 
   // 2. Manage idle dozers
@@ -287,6 +300,8 @@ void AICoopPlayer::assistHumanPlayer() {
   manageAirUnits();
   // 4e. Hacker Management System (NEW - 2026-01-25)
   autoManageHackers();
+  // 4f. Tech Building Capture (NEW - 2026-01-28)
+  autoCaptureTechBuildings();
 
   // 5. Unit Production and Team Management
   // This drives the AI's ability to build units using the Skirmish Teams loaded
@@ -2050,5 +2065,777 @@ void AICoopPlayer::produceHackersFromDedicatedBarracks() {
     DjLog(
         "AICoopPlayer: Producing Hacker %d (money: %d) from dedicated barracks",
         hackerCount + 1, currentMoney);
+  }
+}
+
+//=============================================================================
+// Tech Building Capture System (IDEAL REWRITE - 2026-01-29)
+// Building-centric: each building maps to exactly one soldier
+// Proper tracking, cleanup, and edge case handling
+//=============================================================================
+
+// Helper struct for global assignment sorting
+// Moved outside function to support legacy compiler template instantiation
+struct CaptureCandidate {
+  Object *soldier;
+  Object *building;
+  Real distSq;
+};
+
+// Comparator for std::sort (Global scope)
+bool compareCandidates(const CaptureCandidate &a, const CaptureCandidate &b) {
+  return a.distSq < b.distSq;
+}
+
+Real calculatePathLength(Path *path) {
+  if (!path || !path->getFirstNode())
+    return 99999999.0f;
+  Real dist = 0.0f;
+  PathNode *node = path->getFirstNode();
+  while (node && node->getNext()) {
+    PathNode *next = node->getNext();
+    const Coord3D *p1 = node->getPosition();
+    const Coord3D *p2 = next->getPosition();
+    Real dx = p2->x - p1->x;
+    Real dy = p2->y - p1->y;
+    dist += sqrtf(dx * dx + dy * dy);
+    node = next;
+  }
+  return dist;
+}
+
+void AICoopPlayer::autoCaptureTechBuildings() {
+  UnsignedInt currentFrame = TheGameLogic->getFrame();
+
+  // MONITOR & CLEANUP: Run frequently (every 15 frames = 0.5s)
+  if (currentFrame % 15 == 0) {
+    cleanupCaptureTracking();
+    monitorCaptureProgress();
+  }
+
+  // ASSIGNMENT: Run rarely (every 90 frames = 3.0s)
+  if (currentFrame - m_lastCaptureCheckFrame < 90) {
+    return;
+  }
+  m_lastCaptureCheckFrame = currentFrame;
+
+  // 1. Validation & Setup
+  Player *neutralPlayer = ThePlayerList->getNeutralPlayer();
+  if (!neutralPlayer)
+    return;
+
+  // 2. Collect Neutral Buildings
+  // 2. Collect Neutral Buildings (Global Scan)
+  // (2026-01-31) Switch to Global Object List to bypass any Team/Visibility
+  // filtering which prevents Shrouded buildings from being found.
+  std::vector<Object *> neutralBuildings;
+  Object *obj = TheGameLogic->getFirstObject();
+  while (obj) {
+    if (obj->isKindOf(KINDOF_TECH_BUILDING) && !obj->isEffectivelyDead() &&
+        obj->getControllingPlayer() &&
+        obj->getControllingPlayer() == ThePlayerList->getNeutralPlayer()) {
+      neutralBuildings.push_back(obj);
+
+      // DIAGNOSTIC (2026-01-31): Log found buildings to verify Shroud
+      // visibility if ((TheGameLogic->getFrame() % 150) == 0) {
+      //   DjLog("AICoopPlayer: SCAN Building[%d] Found at (%.0f, %.0f)",
+      //         obj->getID(), obj->getPosition()->x, obj->getPosition()->y);
+      // }
+    }
+    obj = obj->getNextObject();
+  }
+
+  if (neutralBuildings.empty()) {
+    // Clean up any stale assignments if no buildings left?
+    // existing cleanupCaptureTracking handles dead/captured buildings.
+    return;
+  }
+
+  // 3. Collect Potential Soldiers
+  std::vector<Object *> potentialSoldiers;
+  Player::PlayerTeamList::const_iterator pit;
+  for (pit = m_player->getPlayerTeams()->begin();
+       pit != m_player->getPlayerTeams()->end(); ++pit) {
+    for (DLINK_ITERATOR<Team> tIter = (*pit)->iterate_TeamInstanceList();
+         !tIter.done(); tIter.advance()) {
+      Team *team = tIter.cur();
+      if (!team)
+        continue;
+      for (DLINK_ITERATOR<Object> oIter = team->iterate_TeamMemberList();
+           !oIter.done(); oIter.advance()) {
+        Object *obj = oIter.cur();
+        if (!obj || obj->isEffectivelyDead())
+          continue;
+        if (!obj->isKindOf(KINDOF_INFANTRY))
+          continue;
+        if (obj->isKindOf(KINDOF_NO_GARRISON))
+          continue; // Can't capture
+
+        // BLACKLIST CHECK (2026-01-31)
+        if (m_soldierBlacklist.find(obj->getID()) != m_soldierBlacklist.end())
+          continue;
+
+        // STRICT IDLE CHECK (RELAXED 2026-01-31)
+        // AIUpdateInterface *ai = obj->getAIUpdateInterface();
+        // if (!ai || !ai->isIdle()) {
+        //   continue;
+        // }
+
+        if (obj->isKindOf(KINDOF_MONEY_HACKER))
+          continue;
+        if (obj->isKindOf(KINDOF_HERO))
+          continue;
+
+        // CRITICAL FIX: Filter out soldiers inside vehicles/bunkers
+        if (obj->isContained())
+          continue;
+
+        potentialSoldiers.push_back(obj);
+      }
+    }
+  }
+
+  // Also include soldiers currently in m_buildingToSoldier (if they are valid
+  // and not contained) Actually, they should be found in the loop above IF
+  // they are valid. The loop above iterates ALL team members. If
+  // m_buildingToSoldier has someone, they are still on a team. So
+  // potentialSoldiers contains EVERYONE we can use.
+
+  if (neutralBuildings.empty()) {
+    return;
+  }
+
+  // LOG SUMMARY (2026-01-31): Diagnostic counts
+  if ((TheGameLogic->getFrame() % 150) == 0) {
+    DjLog("AICoopPlayer: CAPTURE SUMMARY - Found %d Buildings. Available "
+          "Soldiers: %d. Assigned Active: %d",
+          neutralBuildings.size(), potentialSoldiers.size(),
+          m_buildingToSoldier.size());
+  }
+
+  if (potentialSoldiers.empty())
+    return;
+
+  // 4. Generate Candidate List
+  std::vector<CaptureCandidate> candidates;
+  candidates.reserve(neutralBuildings.size() * potentialSoldiers.size());
+
+  for (size_t i = 0; i < neutralBuildings.size(); ++i) {
+    Object *b = neutralBuildings[i];
+    const Coord3D *bPos = b->getPosition();
+    if (!bPos)
+      continue;
+
+    for (size_t j = 0; j < potentialSoldiers.size(); ++j) {
+      Object *s = potentialSoldiers[j];
+      const Coord3D *sPos = s->getPosition();
+      if (!sPos)
+        continue;
+
+      Real dx = bPos->x - sPos->x;
+      Real dy = bPos->y - sPos->y;
+      Real distSq = dx * dx + dy * dy;
+
+      // PATHFINDING UPDATE (2026-01-31)
+      // If within "reasonable" range (e.g. 1500 units), calculate TRUE walking
+      // distance using pathfinder. This solves the "cliff/wall" problem.
+      if (distSq < 2250000.0f) { // 1500 * 1500
+        Path *path = TheAI->pathfinder()->findGroundPath(sPos, bPos, 0, false);
+        if (path) {
+          Real pathLen = calculatePathLength(path);
+          distSq = pathLen * pathLen;
+          deleteInstance(path); // Release path memory using MemoryPool
+        } else {
+          // FALLBACK (2026-01-31): If path fails (e.g. Shroud), use Air Dist
+          // with penalty. We multiply distSq by 4.0 (effectively doubling the
+          // distance). If truly unreachable, the Blacklist system will catch
+          // the stalling soldier.
+          distSq *= 4.0f;
+        }
+      }
+
+      CaptureCandidate cand;
+      cand.soldier = s;
+      cand.building = b;
+      cand.distSq = distSq;
+      candidates.push_back(cand);
+    }
+  }
+
+  // 5. Sort Candidates (Closest First)
+  std::sort(candidates.begin(), candidates.end(), compareCandidates);
+
+  // 6. Greedy Assignment
+  std::set<ObjectID> usedSoldiers;
+  std::set<ObjectID> usedBuildings;
+  std::map<ObjectID, ObjectID> newAssignments; // BuildingID -> SoldierID
+
+  // STABILITY FIX (2026-01-31):
+  // Preserve existing assignments to prevent "stopping/swapping" mid-path.
+  // If a soldier is already assigned and valid, LOCK HIM IN.
+  std::map<ObjectID, ObjectID>::iterator existIt = m_buildingToSoldier.begin();
+  while (existIt != m_buildingToSoldier.end()) {
+    ObjectID bID = existIt->first;
+    ObjectID sID = existIt->second;
+    Object *b = TheGameLogic->findObjectByID(bID);
+    Object *s = TheGameLogic->findObjectByID(sID);
+
+    // If valid paring, keep it!
+    if (b && s && !s->isEffectivelyDead() && !b->isEffectivelyDead()) {
+      newAssignments[bID] = sID;
+      usedBuildings.insert(bID);
+      usedSoldiers.insert(sID);
+    }
+    ++existIt;
+  }
+
+  std::vector<CaptureCandidate>::iterator cit;
+  for (cit = candidates.begin(); cit != candidates.end(); ++cit) {
+    Object *s = cit->soldier;
+    Object *b = cit->building;
+    ObjectID sID = s->getID();
+    ObjectID bID = b->getID();
+
+    if (usedSoldiers.find(sID) != usedSoldiers.end())
+      continue; // Soldier taken
+    if (usedBuildings.find(bID) != usedBuildings.end())
+      continue; // Building taken
+
+    // Assign!
+    newAssignments[bID] = sID;
+    usedSoldiers.insert(sID);
+    usedBuildings.insert(bID);
+  }
+
+  // 7. Execution & Diffing
+  // A. Detect "Lost Jobs" (Soldiers who were assigned but are not in new
+  // plan) They should be STOPPED.
+  std::map<ObjectID, ObjectID>::iterator oldIt = m_buildingToSoldier.begin();
+  while (oldIt != m_buildingToSoldier.end()) {
+    ObjectID oldBID = oldIt->first;
+    ObjectID oldSID = oldIt->second;
+
+    bool keep = false;
+    if (newAssignments.find(oldBID) != newAssignments.end()) {
+      if (newAssignments[oldBID] == oldSID) {
+        keep = true; // Still the best man for the job
+      }
+    }
+
+    if (!keep) {
+      // He was fired or replaced. Stop him.
+      Object *firedSoldier = TheGameLogic->findObjectByID(oldSID);
+      if (firedSoldier && !firedSoldier->isEffectivelyDead()) {
+        AIUpdateInterface *ai = firedSoldier->getAIUpdateInterface();
+        if (ai) {
+          ai->setAttitude(ATTITUDE_NORMAL);
+          ai->aiIdle(CMD_FROM_AI); // STOP COMMAND
+          DjLog("AICoopPlayer: STOP Soldier[%d] (Replaced/Unneeded)", oldSID);
+        }
+      }
+      // Log swap if replaced
+      if (newAssignments.find(oldBID) != newAssignments.end()) {
+        DjLog("AICoopPlayer: SWAP for Building[%d]: Soldier[%d] -> Soldier[%d]",
+              oldBID, oldSID, newAssignments[oldBID]);
+      }
+
+      oldIt = m_buildingToSoldier.erase(oldIt);
+    } else {
+      ++oldIt;
+    }
+  }
+
+  // B. Execute New Assignments (including Refreshes)
+  std::map<ObjectID, ObjectID>::iterator newIt;
+  for (newIt = newAssignments.begin(); newIt != newAssignments.end(); ++newIt) {
+    ObjectID bID = newIt->first;
+    ObjectID sID = newIt->second;
+
+    m_buildingToSoldier[bID] = sID; // Update map
+
+    Object *s = TheGameLogic->findObjectByID(sID);
+    Object *b = TheGameLogic->findObjectByID(bID);
+
+    if (s && b) {
+      // EJECT FROM TEAM (Script Protection)
+      if (s->getTeam() != m_player->getDefaultTeam()) {
+        s->setTeam(m_player->getDefaultTeam());
+      }
+
+      AIUpdateInterface *ai = s->getAIUpdateInterface();
+      if (ai) {
+        // Determine if we need to issue command.
+        // Since this runs every 15 frames, issuing it constantly is OK-ish,
+        // but we can check if he is already doing it?
+        // Actually, "Refresh" is desired to fight against other queued
+        // orders.
+        ai->setAttitude(ATTITUDE_PASSIVE);
+
+        // ============================================================
+        // INITIAL CAPTURE ASSIGNMENT (tryToCaptureTechBuildings)
+        // ============================================================
+        DjLog(">>> [INITIAL ASSIGN] Soldier[%d] -> Building[%d] START <<<",
+              s->getID(), b->getID());
+
+        Bool captureSent = FALSE;
+        if (TheControlBar && s->getTemplate()) {
+          AsciiString csName = s->getTemplate()->friend_getCommandSetString();
+          DjLog("    [STEP 1/4] Getting CommandSet: '%s'", csName.str());
+
+          const CommandSet *cs = TheControlBar->findCommandSet(csName);
+
+          if (!cs) {
+            DjLog("    [STEP 1/4] ❌ FAIL: CommandSet '%s' NOT FOUND!",
+                  csName.str());
+          } else {
+            DjLog("    [STEP 1/4] ✅ SUCCESS: CommandSet found");
+
+            // Dump all available buttons
+            DjLog("    [STEP 2/4] Scanning CommandButtons in '%s':",
+                  csName.str());
+            int buttonCount = 0;
+            for (int i = 0; i < MAX_COMMANDS_PER_SET; ++i) {
+              const CommandButton *cb = cs->getCommandButton(i);
+              if (cb) {
+                DjLog("              [%d] '%s'", i, cb->getName().str());
+                buttonCount++;
+              }
+            }
+            DjLog("              Total buttons found: %d", buttonCount);
+
+            // Search for capture button (using substring for faction-specific
+            // names)
+            DjLog("    [STEP 3/4] Searching for button containing "
+                  "'CaptureBuilding'...");
+            for (int i = 0; i < MAX_COMMANDS_PER_SET; ++i) {
+              const CommandButton *cb = cs->getCommandButton(i);
+              // CRITICAL FIX: Use strstr for substring match (faction-specific
+              // names) Examples: Command_ChinaInfantryRedGuardCaptureBuilding,
+              // Command_USAInfantryRangerCaptureBuilding
+              if (cb &&
+                  strstr(cb->getName().str(), "CaptureBuilding") != NULL) {
+                DjLog("    [STEP 3/4] ✅ FOUND at index [%d]!", i);
+                DjLog("    [STEP 4/4] Executing capture command via "
+                      "doCommandButtonAtObject...");
+
+                // CRITICAL FIX: Use Object::doCommandButtonAtObject instead of
+                // aiDoCommand(AICMD_COMMANDBUTTON_OBJ).
+                // The AI dispatch only handles COMBATDROP, but
+                // Object::doCommandButtonAtObject properly handles
+                // GUI_COMMAND_SPECIAL_POWER which is what CaptureBuilding uses.
+                // CRITICAL FIX: Use CMD_FROM_SCRIPT to force execution!
+                // CMD_FROM_AI causes canUseSpecialPower check which silently
+                // fails.
+                s->doCommandButtonAtObject(cb, b, CMD_FROM_SCRIPT);
+                captureSent = TRUE;
+
+                DjLog("    [STEP 4/4] ✅ SUCCESS: Capture command sent "
+                      "(SpecialPower)!");
+                DjLog(">>> [INITIAL ASSIGN] Soldier[%d] -> Building[%d] ✅ "
+                      "COMPLETE <<<\n",
+                      s->getID(), b->getID());
+                break;
+              }
+            }
+
+            if (!captureSent) {
+              DjLog("    [STEP 3/4] ❌ FAIL: 'Command_CaptureBuilding' NOT "
+                    "FOUND in buttons!");
+            }
+          }
+        } else {
+          DjLog("    [STEP 1/4] ❌ FAIL: TheControlBar or Template is NULL");
+        }
+
+        if (!captureSent) {
+          DjLog("    [FALLBACK] Using aiEnter() instead...");
+          ai->aiEnter(b, CMD_FROM_AI);
+          DjLog(">>> [INITIAL ASSIGN] Soldier[%d] -> Building[%d] ⚠️ FALLBACK "
+                "USED <<<\n",
+                s->getID(), b->getID());
+        }
+      }
+    }
+  }
+
+  if (!newAssignments.empty()) {
+    // Optional concise summary
+    // DjLog("AICoopPlayer: Global Assign: %d pairings",
+    // newAssignments.size());
+  }
+}
+
+void AICoopPlayer::cleanupCaptureTracking() {
+  // Remove entries where: soldier died, building died, building captured, or
+  // soldier became idle
+  Int removedCount = 0;
+
+  std::map<ObjectID, ObjectID>::iterator it = m_buildingToSoldier.begin();
+  while (it != m_buildingToSoldier.end()) {
+    ObjectID buildingID = it->first;
+    ObjectID soldierID = it->second;
+
+    Object *building = TheGameLogic->findObjectByID(buildingID);
+    Object *soldier = TheGameLogic->findObjectByID(soldierID);
+
+    Bool remove = false;
+
+    // Case 1: Soldier is dead
+    if (!soldier || soldier->isEffectivelyDead()) {
+      remove = true;
+    }
+    // Case 2: Building is dead
+    else if (!building || building->isEffectivelyDead()) {
+      remove = true;
+    }
+    // Case 3: Building was captured (no longer neutral)
+    else if (building->getControllingPlayer() !=
+             ThePlayerList->getNeutralPlayer()) {
+      remove = true;
+    }
+    // Case 4: Soldier is contained in something (e.g. Transport) but NOT the
+    // building
+    else if (soldier->isContained() && soldier->getContainedBy() != building) {
+      remove = true;
+      DjLog(
+          "AICoopPlayer: FAILURE Soldier[%d] CONTAINED in Object[%d] (not "
+          "target)",
+          soldierID,
+          (soldier->getContainedBy() ? soldier->getContainedBy()->getID() : 0));
+    }
+    // NOTE: Removed idle check - isIdle() returns true while walking!
+
+    if (remove) {
+      if (!soldier || soldier->isEffectivelyDead()) {
+        DjLog("AICoopPlayer: FAILURE Soldier[%d] DIED en route to Building[%d]",
+              soldierID, buildingID);
+      } else if (building && building->getControllingPlayer() !=
+                                 ThePlayerList->getNeutralPlayer()) {
+        DjLog("AICoopPlayer: SUCCESS! Soldier[%d] CAPTURED Building[%d]",
+              soldierID, buildingID);
+
+        // SUCCESS: Reset attitude to AGGRESSIVE to defend the new building
+        if (soldier && !soldier->isEffectivelyDead()) {
+          AIUpdateInterface *ai = soldier->getAIUpdateInterface();
+          if (ai)
+            ai->setAttitude(ATTITUDE_AGGRESSIVE);
+        }
+      }
+
+      it = m_buildingToSoldier.erase(it);
+      removedCount++;
+    } else {
+      // STATUS UPDATE: Log if soldier is close or starting capture
+      if (soldier && building) {
+        const Coord3D *spos = soldier->getPosition();
+        const Coord3D *bpos = building->getPosition();
+        if (spos && bpos) {
+          Real dx = bpos->x - spos->x;
+          Real dy = bpos->y - spos->y;
+          Real dist = sqrtf(dx * dx + dy * dy);
+
+          // LOG: Started Capturing (Inside or very close)
+          if (soldier->isContained() || dist < 15.0f) {
+            // Only log this once ideally, but here we log it periodically while
+            // inside. To avoid spam, using mod check on frame
+            if ((TheGameLogic->getFrame() % 90) == 0) {
+              DjLog("AICoopPlayer: ARRIVED/CAPTURING Soldier[%d] at "
+                    "Building[%d] (Contained: %d, Dist: %.1f)",
+                    soldierID, buildingID, soldier->isContained(), dist);
+            }
+          }
+          // LOG: En Route (Moving)
+          else if ((TheGameLogic->getFrame() % 150) == 0) { // Every 5 seconds
+            DjLog("AICoopPlayer: STATUS Soldier[%d] at (%.0f, %.0f) -> "
+                  "Building[%d] at (%.0f, %.0f) (Dist: %.1f)",
+                  soldierID, spos->x, spos->y, buildingID, bpos->x, bpos->y,
+                  dist);
+
+            // STALLED CHECK: If soldier is IDLE but far away, re-issue command
+            AIUpdateInterface *ai = soldier->getAIUpdateInterface();
+            if (ai && ai->isIdle() && dist > 20.0f) {
+
+              // BLACKLIST LOGIC (2026-01-31)
+              m_failedCaptureAttempts[soldierID]++;
+              if (m_failedCaptureAttempts[soldierID] > 5) {
+                DjLog(
+                    "AICoopPlayer: BLACKLISTING Soldier[%d] (Stalled 5+ times)",
+                    soldierID);
+                m_soldierBlacklist.insert(soldierID);
+                // ai->stop(); // Not available in AIUpdateInterface
+                if (ai)
+                  ai->setAttitude(ATTITUDE_PASSIVE);
+
+                // Release assignment
+                // We are inside iteration, but 'it' has already advanced in the
+                // calling loop (monitorCaptureProgress) Wait, this is
+                // 'autoCaptureTechBuildings' loop! 'it' is iterating
+                // m_buildingToSoldier.
+                it = m_buildingToSoldier.erase(it);
+                removedCount++;
+                continue;
+              }
+
+              DjLog("AICoopPlayer: WARNING Soldier[%d] STALLED at dist %.1f! "
+                    "(SpecialAbilityUpdate should handle this - skipping "
+                    "aiEnter)",
+                    soldierID, dist);
+
+              // Eject from any scripted team to prevent script interference
+              if (soldier->getTeam() != m_player->getDefaultTeam()) {
+                soldier->setTeam(m_player->getDefaultTeam());
+              }
+
+              ai->setAttitude(ATTITUDE_PASSIVE); // Re-enforce passive
+              // CRITICAL FIX (2026-02-01): DO NOT call aiEnter!
+              // Tech Buildings don't have CONTAIN module - aiEnter gets
+              // rejected! SpecialAbilityUpdate handles capture via
+              // approachTarget() - just wait. ai->aiEnter(building,
+              // CMD_FROM_AI);
+            }
+          }
+        }
+      }
+      ++it;
+    }
+  }
+
+  if (removedCount > 0) {
+    DjLog("AICoopPlayer: Cleanup removed %d stale capture entries",
+          removedCount);
+  }
+}
+
+// Watchdog: Verify soldier state and self-heal lost commands
+void AICoopPlayer::monitorCaptureProgress() {
+  std::map<ObjectID, ObjectID>::iterator it = m_buildingToSoldier.begin();
+  while (it != m_buildingToSoldier.end()) {
+    ObjectID bID = it->first;
+    ObjectID sID = it->second;
+    it++; // Safe advance
+
+    Object *soldier = TheGameLogic->findObjectByID(sID);
+    Object *building = TheGameLogic->findObjectByID(bID);
+
+    if (!soldier || !building)
+      continue;
+
+    AIUpdateInterface *ai = soldier->getAIUpdateInterface();
+    if (!ai)
+      continue;
+
+    // 1. Goal Verification (Self-Healing)
+    Object *currentGoal = ai->getGoalObject();
+
+    // CRITICAL FIX (2026-02-01): Skip recovery if soldier is ACTIVELY
+    // capturing! During SpecialAbility execution (capture in progress), the
+    // engine sets OBJECT_STATUS_IS_USING_ABILITY. Don't re-issue commands
+    // during this phase!
+    Bool isUsingAbility = soldier->testStatus(OBJECT_STATUS_IS_USING_ABILITY);
+
+    // DIAGNOSTIC: Log status to understand why check is not working
+    if ((TheGameLogic->getFrame() % 30) == 0) {
+      DjLog("AICoopPlayer: DIAG Soldier[%d] IS_USING_ABILITY=%d Goal=%s", sID,
+            isUsingAbility ? 1 : 0,
+            currentGoal ? (currentGoal == building ? "BUILDING" : "OTHER")
+                        : "NULL");
+    }
+
+    if (isUsingAbility) {
+      // Soldier is actively capturing - do NOT interrupt!
+      continue;
+    }
+
+    if (currentGoal != building) {
+
+      // SHROUD FIX (2026-01-31):
+      // If the building is Shrouded/Fogged, 'aiEnter' fails (Goal becomes
+      // NULL). We must 'Move' (Scout) there first. CRITICAL: Check this BEFORE
+      // Blacklist logic so we don't penalize scouting!
+      ObjectShroudStatus shroud =
+          building->getShroudedStatus(m_player->getPlayerIndex());
+      if (shroud == OBJECTSHROUD_SHROUDED || shroud == OBJECTSHROUD_FOGGED) {
+        if ((TheGameLogic->getFrame() % 60) == 0) {
+          DjLog("AICoopPlayer: Soldier[%d] Target[%d] is SHROUDED (letting "
+                "SpecialAbilityUpdate handle)",
+                sID, bID);
+        }
+        // CRITICAL FIX (2026-02-02): DO NOT call aiMoveToPosition!
+        // ============================================================
+        // ROOT CAUSE OF ENDLESS RESTART:
+        // After INITIAL ASSIGN issues capture command, SpecialAbilityUpdate
+        // starts handling the soldier via approachTarget().
+        // Calling aiMoveToPosition here OVERRIDES the SpecialAbilityUpdate's
+        // movement and resets its progress!
+        //
+        // SpecialAbilityUpdate::approachTarget() already calls:
+        //   ai->aiMoveToObject(target, CMD_FROM_AI);
+        // We should NOT interfere with additional move commands.
+        // ============================================================
+        // OLD CODE THAT RESET PROGRESS - DO NOT ENABLE:
+        // ai->aiMoveToPosition(building->getPosition(), CMD_FROM_AI);
+        continue; // SKIP BLACKLIST LOGIC & SKIP FAIL COUNT
+      }
+
+      // ============================================================
+      // CRITICAL FIX (2026-02-01): THROTTLE MONITOR RECOVERY
+      // ============================================================
+      // ROOT CAUSE: Every doCommandButtonAtObject call triggers
+      // initiateIntentToDoSpecialPower which:
+      //   1. Calls aiIdle() - CLEARS soldier's goal
+      //   2. Resets m_targetID, m_packingState, etc.
+      // This COMPLETELY RESETS SpecialAbilityUpdate progress!
+      //
+      // If we call recovery every frame, the soldier never gets to
+      // approachTarget() because his progress resets each time.
+      //
+      // SOLUTION: Only allow recovery every 300 frames (5 seconds).
+      // This gives SpecialAbilityUpdate time to work.
+      // ============================================================
+      if ((TheGameLogic->getFrame() % 300) != 0) {
+        // Not time for recovery check yet - let SpecialAbilityUpdate work
+        continue;
+      }
+
+      // AGGRESSIVE FIX: Ensure he belongs to us
+      if (soldier->getTeam() != m_player->getDefaultTeam()) {
+        soldier->setTeam(m_player->getDefaultTeam());
+      }
+      ai->setAttitude(ATTITUDE_PASSIVE);
+
+      // ============================================================
+      // MONITOR & RECOVERY (monitorCaptureProgress)
+      // ============================================================
+      DjLog(">>> [MONITOR] Soldier[%d] -> Building[%d] RECOVERY START <<<", sID,
+            bID);
+
+      // 1. Try CommandButton 'CaptureBuilding' FIRST
+      Bool captureSent = FALSE;
+      bool hasCaptureAbility = false;
+
+      // Access CommandSet via ControlBar (Global)
+      if (TheControlBar && soldier->getTemplate()) {
+        AsciiString csName =
+            soldier->getTemplate()->friend_getCommandSetString();
+        DjLog("    [MONITOR-1] CommandSet: '%s'", csName.str());
+
+        const CommandSet *cs = TheControlBar->findCommandSet(csName);
+
+        if (cs) {
+          DjLog("    [MONITOR-2] Searching for button containing "
+                "'CaptureBuilding'...");
+          for (int i = 0; i < MAX_COMMANDS_PER_SET; ++i) {
+            const CommandButton *cb = cs->getCommandButton(i);
+            // CRITICAL FIX: Use strstr for substring match
+            if (cb && strstr(cb->getName().str(), "CaptureBuilding") != NULL) {
+              // CRITICAL FIX (2026-02-01): DO NOT RE-ISSUE CAPTURE COMMAND!
+              // ============================================================
+              // ROOT CAUSE OF ENDLESS RESTART CYCLE:
+              // Every doCommandButtonAtObject call triggers:
+              //   initiateIntentToDoSpecialPower (line 518 in
+              //   SpecialAbilityUpdate)
+              //     → aiIdle(CMD_FROM_AI)  ← CLEARS GOAL!
+              //     → m_targetID = RESET
+              //     → m_packingState = RESET
+              // This COMPLETELY RESETS SpecialAbilityUpdate progress!
+              //
+              // INITIAL ASSIGN already issued the command.
+              // SpecialAbilityUpdate handles the rest via approachTarget().
+              // We should NOT interfere by re-issuing commands!
+              // ============================================================
+              DjLog("    [MONITOR-2] ✅ FOUND CaptureBuilding button (NOT "
+                    "re-issuing to avoid reset)");
+
+              // OLD CODE THAT CAUSED RESET - DO NOT ENABLE:
+              // soldier->doCommandButtonAtObject(cb, building,
+              // CMD_FROM_SCRIPT);
+
+              // captureSent = TRUE;  // Don't mark as sent since we're not
+              // sending
+              hasCaptureAbility = true;
+              DjLog("    [MONITOR-3] ℹ️ Soldier has capture ability - letting "
+                    "SpecialAbilityUpdate work");
+              break;
+            }
+          }
+
+          if (!captureSent) {
+            DjLog(
+                "    [MONITOR-2] ❌ FAIL: 'Command_CaptureBuilding' NOT FOUND");
+          }
+        } else {
+          DjLog("    [MONITOR-1] ❌ FAIL: CommandSet '%s' not found",
+                csName.str());
+        }
+      } else {
+        DjLog("    [MONITOR-1] ❌ FAIL: TheControlBar or Template is NULL");
+      }
+
+      if (captureSent) {
+        // SUCCESS: We issued a real capture command.
+        // Reset failure count so he doesn't get blacklisted while capturing.
+        m_failedCaptureAttempts[sID] = 0;
+        DjLog(">>> [MONITOR] Soldier[%d] -> Building[%d] ✅ RECOVERED <<<\n",
+              sID, bID);
+        continue; // Skip the rest (Blacklist/Fallback)
+      }
+
+      // 2. BLACKLIST LOGIC (Only if CommandButton failed/not found)
+      m_failedCaptureAttempts[sID]++;
+      DjLog("    [MONITOR-4] ⚠️ Incrementing failure count: %d/5",
+            m_failedCaptureAttempts[sID]);
+
+      if (m_failedCaptureAttempts[sID] > 5) {
+        DjLog("    [MONITOR-4] 🚫 BLACKLISTING Soldier[%d] (Failed 5+ times)",
+              sID);
+        m_soldierBlacklist.insert(sID);
+        if (ai)
+          ai->setAttitude(ATTITUDE_PASSIVE);
+        m_buildingToSoldier.erase(bID);
+        DjLog(">>> [MONITOR] Soldier[%d] -> Building[%d] 🚫 BLACKLISTED <<<\n",
+              sID, bID);
+        continue;
+      }
+
+      // 3. Fallback to aiEnter (for non-capture units or Bunkers)
+      if (!hasCaptureAbility) {
+        DjLog("    [FALLBACK] Soldier[%d] has NO CAPTURE BUTTON. Trying "
+              "aiEnter...",
+              sID);
+      }
+      // CRITICAL FIX (2026-02-01): DO NOT call aiEnter!
+      // Tech Buildings don't have CONTAIN module - aiEnter gets rejected!
+      // This causes soldier to reposition and restart capture in endless loop.
+      // SpecialAbilityUpdate handles capture - just wait.
+      // ai->aiEnter(building, CMD_FROM_AI);
+      continue;
+    }
+
+    // 2. Stalled Idle Check
+    const Coord3D *spos = soldier->getPosition();
+    const Coord3D *bpos = building->getPosition();
+    Real dist = 0.0f;
+    if (spos && bpos) {
+      Real dx = bpos->x - spos->x;
+      Real dy = bpos->y - spos->y;
+      dist = sqrtf(dx * dx + dy * dy);
+    }
+
+    if (dist > 15.0f && ai->isIdle()) {
+      DjLog("AICoopPlayer: TRACKER ERROR Soldier[%d] STALLED (Idle at %.1f). "
+            "(SpecialAbilityUpdate should handle - skipping aiEnter)",
+            sID, dist);
+      ai->setAttitude(ATTITUDE_PASSIVE);
+      // CRITICAL FIX (2026-02-01): DO NOT call aiEnter!
+      // Tech Buildings don't have CONTAIN module - aiEnter gets rejected!
+      // ai->aiEnter(building, CMD_FROM_AI);
+      continue;
+    }
+
+    // 3. Status Log (Every 2 seconds)
+    if ((TheGameLogic->getFrame() % 60) == 0 && dist > 15.0f) {
+      DjLog("AICoopPlayer: TRACKER Soldier[%d] EN ROUTE to [%d] (Dist: %.1f)",
+            sID, bID, dist);
+    }
   }
 }

@@ -1,7 +1,7 @@
 # GeneralsMD: Advanced AI & Engine Overhaul
 **For Command & Conquer: Generals Zero Hour**
 
-> **Current Version:** Dev-2026.01.26  
+> **Current Version:** Dev-2026.02.02  
 > **Status:** Production Ready (Complete AI System Active)
 
 **GeneralsMD** is a source code modification project aimed at modernizing the *Zero Hour* engine and introducing a powerful **Co-op AI Assistant** with intelligent unit management.
@@ -14,6 +14,7 @@ Play *with* the AI instead of just against it. `AICoopPlayer` manages your base 
 - **AI Assist Mode:** Press `INSERT` in-game to let the AI take control
 - **Smart Build Algorithm:** Prevents common AI bugs (Power Plant Spam, Deadlocks)
 - **Auto Combat:** Units automatically engage nearby enemies
+- **Intelligent Capture:** Aggressively captures Tech Buildings (Oil Derricks, Hospitals)
 
 ### 💰 China Hacker AI (Complete System)
 | Feature | Description |
@@ -65,6 +66,21 @@ Play *with* the AI instead of just against it. `AICoopPlayer` manages your base 
 | **FIX #13** | Count-based barracks detection |
 | **FIX #14** | 150-unit hack distance threshold |
 
+### 2026-01-28: Tech Building Capture System
+| Fix | Description |
+|-----|-------------|
+| **FIX #15** | Aggressive capture of Oil Derricks & Hospitals |
+| **Early Game Blitz** | All-map capture attempt in first 30 seconds |
+| **Idle Unit Usage** | Uses available RedGuard/Ranger/Rebels automatically |
+
+### 2026-02-02: Deep Engine Capture Fix
+| Fix | Description |
+|-----|-------------|
+| **FIX #16** | **CRITICAL:** Fixed endless capture restart cycle |
+| **Engine Fix** | Solved `initiateIntent` resetting goal by disabling re-issue |
+| **AI Fix** | Removed `aiEnter` calls for non-bunker buildings |
+| **Shroud Fix** | Disabled `aiMoveToPosition` override for shrouded targets |
+
 ## 🚀 Key Engine Fixes
 1. **Unit Recall Fix:** Units no longer randomly run back to base
 2. **Skirmish Team Loading:** Fixed AI script loading for human factions
@@ -93,4 +109,4 @@ Output: `Output\ZeroHour\generalszh.exe`
 - **Original Game:** EA Pacific
 
 ---
-*Tested on Windows 10/11. Last updated: 2026-01-26*
+*Tested on Windows 10/11. Last updated: 2026-02-02*

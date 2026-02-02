@@ -31,6 +31,7 @@
 #include "GameLogic/AIPlayer.h"
 #include "GameLogic/AISkirmishPlayer.h"
 #include <map>
+#include <set>
 
 // Guard command cooldown: 90 frames = ~3 seconds at 30 FPS
 static const UnsignedInt GUARD_COMMAND_COOLDOWN_FRAMES = 90;
@@ -131,4 +132,18 @@ protected:
 
   // Helper to clean up dead units from cooldown map
   void cleanupGuardCooldownMap();
+
+  // Tech Building Capture System (2026-01-29 REWRITE)
+  // Building-centric: each building maps to one soldier
+  void autoCaptureTechBuildings();
+  void cleanupCaptureTracking();
+
+  // Building ID -> Soldier ID (which soldier is assigned to which building)
+  std::map<ObjectID, ObjectID> m_buildingToSoldier;
+  void monitorCaptureProgress();
+  UnsignedInt m_lastCaptureCheckFrame;
+
+  // Blacklist System (2026-01-31)
+  std::map<ObjectID, Int> m_failedCaptureAttempts;
+  std::set<ObjectID> m_soldierBlacklist;
 };

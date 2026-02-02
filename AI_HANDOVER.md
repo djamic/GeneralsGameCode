@@ -391,3 +391,215 @@ S = (W1 × Dthreat) + (W2 × Dborder) + (W3 × Ddefense)
 ---
 **Handover Status:** Ready for production. Complete Hacker AI System: Opposite-direction placement, Money-based production, Count-based barracks, 150-unit hack threshold. (Signed off by Antigravity, 2026-01-26).
 
+---
+
+## ✅ FIX #15: Tech Building Capture System (2026-01-28)
+
+**Muammo:** AI neft vishkalari va boshqa tech binolarni egallashda faol emas edi.
+
+### Yechim: Aggressive Capture System
+
+**Yangi funksiyalar:**
+| Funksiya | Vazifasi |
+|----------|----------|
+| `autoCaptureTechBuildings()` | Har 2 soniyada neutral tech binolarni qidiradi va capture yuboradi |
+| `findAvailableCapturer()` | Bo'sh turgan piyodani topadi (hacker/hero emas) |
+| `cleanupCaptureTracking()` | O'lgan unit/egallangan binolarni trackingdan o'chiradi |
+
+**Member variables:**
+| O'zgaruvchi | Vazifasi |
+|------------|----------|
+| `m_captureTargets` | Nishonga olingan bino ID lari (set) |
+| `m_capturerToTarget` | Unit -> Bino mapping (map) |
+| `m_earlyCaptureSent` | Early game blitz qilindimi flag |
+| `m_lastCaptureCheckFrame` | Oxirgi tekshiruv framei |
+
+### Logika
+1. **Early Game Blitz (30 soniya):** Xaritadagi BARCHA neutral tech binolarni egallashga harakat
+2. **Late Game:** Faqat bazaga yaqin (800 unit radius) binolarni egallash
+3. **Idle Infantry:** Faqat bo'sh turgan piyodalar yuboriladi
+4. **Skip:** Hackerlar, Herolar, va NO_GARRISON unitlar o'tkazib yuboriladi
+
+### Tekshiriladigan Loglar
+```
+AICoopPlayer: Sending RedGuard to capture CivOilDerrick (dist: 450)
+AICoopPlayer: Early game capture - sent 3 units to capture 3 buildings
+AICoopPlayer: Tech building found but no capturers available!
+```
+
+**Tegishli fayllar:**
+*   `AICoopPlayer.h` - yangi funksiya va member deklaratsiyalari
+*   `AICoopPlayer.cpp:2063-2248` - capture system implementation
+
+---
+
+**Handover Status:** UPDATED for 2026-01-28. Added Tech Building Capture System for aggressive oil derrick/hospital control. (Signed off by Antigravity, 2026-01-28).
+
+---
+
+## ✅ FIX #16: Capture Restart Bug - Deep Engine Fix (2026-02-02)
+
+**Muammo:** Askarlar binoga yetib borib, capture boshlardi, lekin keyin pozitsiyasini o'zgartirib yana boshidan boshlardi. Bu **CHEKSIZ CYCLE** yaratardi.
+
+### Root Cause Analysis (Chuqur Tahlil)
+
+**Muammo zanjiri:**
+```
+1. INITIAL ASSIGN: doCommandButtonAtObject(CaptureBuilding)
+2. Engine: SpecialPowerModule::doSpecialPowerAtObject()
+3. Engine: initiateIntentToDoSpecialPower() → aiIdle() ← GOAL RESET!
+4. SpecialAbilityUpdate: m_active = true, approachTarget() chaqiriladi
+5. MONITOR: currentGoal != building? → TRUE (chunki aiIdle goal ni bekor qilgan)
+6. MONITOR: doCommandButtonAtObject() QAYTA chaqiradi
+7. Go to step 2 → CHEKSIZ DAVR!
+```
+
+### Engine Architecture Insights
+
+**SpecialAbilityUpdate.cpp (lines 471-559):**
+```cpp
+Bool SpecialAbilityUpdate::initiateIntentToDoSpecialPower(...) {
+    // Line 487-494: BARCHA progressni RESET qiladi!
+    m_targetID = INVALID_ID;
+    m_targetPos.zero();
+    m_packingState = STATE_PACKED;
+    
+    // Line 518: GOAL NI BEKOR QILADI!
+    getObject()->getAIUpdateInterface()->aiIdle(CMD_FROM_AI);
+    
+    // Line 529: Faqat keyin aktivlashtiradi
+    m_active = true;
+}
+```
+
+**SpecialAbilityUpdate::update() (lines 462-465):**
+```cpp
+else if (ai->isIdle()) {
+    // STEP 1 -- APPROACH
+    approachTarget();  // aiMoveToObject(target) chaqiradi
+}
+```
+
+**MUHIM:** `initiateIntentToDoSpecialPower` har chaqirilganda:
+1. `aiIdle()` → Goal bekor bo'ladi
+2. `m_targetID = INVALID_ID` → Progress reset
+3. Keyingi frame da `approachTarget()` harakatni boshlaydi
+4. **LEKIN** agar MONITOR yana buyruq bersa → HAMMASI QAYTADAN RESET!
+
+### Fixes Applied (Qo'llangan Tuzatishlar)
+
+| # | Fayl | Muammo | Yechim |
+|---|------|--------|--------|
+| 1 | `AICoopPlayer.cpp:2728` | MONITOR har 300 frame buyruq berardi | `doCommandButtonAtObject` **TO'LIQ O'CHIRILDI** |
+| 2 | `AICoopPlayer.cpp:2589` | STALLED check `aiEnter` chaqirardi | `aiEnter` **O'CHIRILDI** |
+| 3 | `AICoopPlayer.cpp:2777` | FALLBACK `aiEnter` chaqirardi | `aiEnter` **O'CHIRILDI** |
+| 4 | `AICoopPlayer.cpp:2796` | TRACKER STALLED `aiEnter` chaqirardi | `aiEnter` **O'CHIRILDI** |
+| 5 | `AICoopPlayer.cpp:2663` | SHROUD check `aiMoveToPosition` chaqirardi | `aiMoveToPosition` **O'CHIRILDI** |
+
+### aiEnter vs CaptureBuilding
+
+**MUHIM FARQ:**
+| Buyruq | Qachon ishlaydi | Misol |
+|--------|-----------------|-------|
+| `aiEnter` | Faqat `ContainModule` bor binolar | Bunker, Battle Bus |
+| `CaptureBuilding` (SpecialPower) | Tech binolar | Oil Derrick, Hospital, Supply |
+
+**Xato:** `aiEnter` Tech binolarga chaqirilganda:
+```
+ActionManager::canEnterObject: REJECTED Soldier[234]->Target[189]. 
+Reason: Target has NO CONTAIN Module
+```
+
+### Yangi Arxitektura
+
+```
+INITIAL ASSIGN (bir marta)
+    ↓
+doCommandButtonAtObject(CaptureBuilding, building, CMD_FROM_SCRIPT)
+    ↓
+Object::doCommandButtonAtObject
+    ↓ GUI_COMMAND_SPECIAL_POWER
+Object::doSpecialPowerAtObject(forced=TRUE)
+    ↓
+SpecialPowerModuleInterface::doSpecialPowerAtObject
+    ↓
+SpecialAbilityUpdate::initiateIntentToDoSpecialPower
+    ↓ m_active = true, m_targetID = building
+SpecialAbilityUpdate::update() [Har frame]
+    ↓
+    if (ai->isIdle()) 
+        approachTarget() → aiMoveToObject(target)
+    ↓
+    if (isWithinStartAbilityRange())
+        startPreparation() → MODELCONDITION_RAISING_FLAG
+    ↓
+    triggerAbilityEffect() → BINO EGALLANDI!
+    ↓
+    finishAbility()
+```
+
+### Critical Code Comments
+
+**AICoopPlayer.cpp:2720-2740:**
+```cpp
+// CRITICAL FIX (2026-02-01): DO NOT RE-ISSUE CAPTURE COMMAND!
+// ============================================================
+// ROOT CAUSE OF ENDLESS RESTART CYCLE:
+// Every doCommandButtonAtObject call triggers:
+//   initiateIntentToDoSpecialPower (line 518 in SpecialAbilityUpdate)
+//     → aiIdle(CMD_FROM_AI)  ← CLEARS GOAL!
+//     → m_targetID = RESET
+//     → m_packingState = RESET
+// This COMPLETELY RESETS SpecialAbilityUpdate progress!
+//
+// INITIAL ASSIGN already issued the command.
+// SpecialAbilityUpdate handles the rest via approachTarget().
+// We should NOT interfere by re-issuing commands!
+// ============================================================
+```
+
+**AICoopPlayer.cpp:2660-2675:**
+```cpp
+// CRITICAL FIX (2026-02-02): DO NOT call aiMoveToPosition!
+// ============================================================
+// ROOT CAUSE OF ENDLESS RESTART:
+// After INITIAL ASSIGN issues capture command, SpecialAbilityUpdate
+// starts handling the soldier via approachTarget().
+// Calling aiMoveToPosition here OVERRIDES the SpecialAbilityUpdate's
+// movement and resets its progress!
+// ============================================================
+```
+
+### Diagnostics Added
+
+**Object.cpp (Engine level):**
+```cpp
+DjLog("Object::doSpecialPowerAtObject ENTRY - ObjID=%d, TargetID=%d, Forced=%d",
+      getID(), obj ? obj->getID() : 0, forced ? 1 : 0);
+DjLog("Object::doSpecialPowerAtObject SUCCESS - Calling mod->doSpecialPowerAtObject");
+```
+
+**AICoopPlayer.cpp (Monitor level):**
+```cpp
+DjLog("AICoopPlayer: DIAG Soldier[%d] IS_USING_ABILITY=%d Goal=%s", sID,
+      isUsingAbility ? 1 : 0,
+      currentGoal ? (currentGoal == building ? "BUILDING" : "OTHER") : "NULL");
+```
+
+### Debugging Lessons
+
+1. **"Silent Failure":** `canUseSpecialPower` check `CMD_FROM_AI` bilan FAIL bo'ladi, lekin xato yozmaydi. `CMD_FROM_SCRIPT` ishlatish kerak.
+2. **Goal Reset:** `initiateIntentToDoSpecialPower` ichida `aiIdle()` **GOAL NI BEKOR QILADI**. Shuning uchun MONITOR "goal != building" deb ko'radi.
+3. **aiEnter Rejection:** `aiEnter` FAQAT `ContainModule` bor binolar uchun ishlaydi. Tech binolar uchun ishlamaydi.
+4. **Interference:** INITIAL ASSIGN dan keyin HECH QANDAY harakat buyruq bermaslik kerak - SpecialAbilityUpdate o'zi boshqaradi.
+
+### Key Files Modified
+
+| Fayl | O'zgarish |
+|------|-----------|
+| `AICoopPlayer.cpp` | MONITOR/STALLED/SHROUD movement buyruqlari o'chirildi |
+| `Object.cpp` | Diagnostika loglari qo'shildi |
+
+---
+
+**Handover Status:** UPDATED for 2026-02-02. CRITICAL FIX: Resolved capture restart infinite cycle by removing ALL interfering commands (MONITOR re-issue, STALLED aiEnter, SHROUD aiMoveToPosition). Now ONLY INITIAL ASSIGN issues capture command, SpecialAbilityUpdate handles the rest. (Signed off by Antigravity, 2026-02-02).
