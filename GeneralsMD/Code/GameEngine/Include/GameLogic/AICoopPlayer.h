@@ -146,4 +146,22 @@ protected:
   // Blacklist System (2026-01-31)
   std::map<ObjectID, Int> m_failedCaptureAttempts;
   std::set<ObjectID> m_soldierBlacklist;
+
+  // Supply Center Expansion System (2026-02-03)
+  // Automatically finds safe resource locations and sends dozers to build
+  void autoExpandSupplyNetwork();
+  Object *findSafeSupplySource();
+  Real evaluateSupplyLocation(Object *supplyWarehouse, const Coord3D &enemyPos);
+  Bool isPathSafeForDozer(const Coord3D &start, const Coord3D &end);
+  Bool isExpandingToSupply() const { return m_expansionDozerID != INVALID_ID; }
+  void produceExpansionDozer(); // Produce dozer for expansion at game start
+
+  // Override findDozer to exclude expansion dozer from base building tasks
+  virtual Object *findDozer(const Coord3D *pos);
+
+  ObjectID m_expansionDozerID;               // Dozer assigned to expansion task
+  ObjectID m_targetSupplyWarehouseID;        // Target supply source
+  UnsignedInt m_lastExpansionCheckFrame;     // Last check timestamp
+  std::set<ObjectID> m_claimedSupplySources; // Already claimed sources
+  Bool m_expansionDozerRequested;            // Flag: dozer production requested
 };

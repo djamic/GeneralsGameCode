@@ -272,6 +272,8 @@ void AIPlayer::queueSupplyTruck(void) {
     if (info->isSupplyBuilding() == false)
       continue;
     Int desiredGatherers = info->getDesiredGatherers();
+    if (desiredGatherers < 2)
+      desiredGatherers = 2; // Force minimum 2 trucks per supply center
     Int curGatherers = info->getCurrentGatherers();
 
     if (curGatherers >= desiredGatherers) {

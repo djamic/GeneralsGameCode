@@ -1,7 +1,7 @@
 # GeneralsMD: Advanced AI & Engine Overhaul
 **For Command & Conquer: Generals Zero Hour**
 
-> **Current Version:** Dev-2026.02.02  
+> **Current Version:** Dev-2026.02.04  
 > **Status:** Production Ready (Complete AI System Active)
 
 **GeneralsMD** is a source code modification project aimed at modernizing the *Zero Hour* engine and introducing a powerful **Co-op AI Assistant** with intelligent unit management.
@@ -16,6 +16,16 @@ Play *with* the AI instead of just against it. `AICoopPlayer` manages your base 
 - **Auto Combat:** Units automatically engage nearby enemies
 - **Intelligent Capture:** Aggressively captures Tech Buildings (Oil Derricks, Hospitals)
 
+### 🏗️ Supply Center Expansion System (NEW!)
+| Feature | Description |
+|---------|-------------|
+| **Pathfinding Distance** | Uses real walking distance, not straight-line |
+| **Dozer Protection** | Expansion dozer won't be recalled mid-mission |
+| **Proximity Priority** | Prefers closest supply sources (W_BASE_PROXIMITY=4.0) |
+| **Safe Path Check** | Avoids routes with enemy presence |
+| **Completion Detection** | Auto-releases dozer after successful build |
+| **Min 2 Trucks** | Each Supply Center gets minimum 2 supply trucks |
+
 ### 💰 China Hacker AI (Complete System)
 | Feature | Description |
 |---------|-------------|
@@ -26,6 +36,15 @@ Play *with* the AI instead of just against it. `AICoopPlayer` manages your base 
 | **Safe Zone Scoring** | Weighted algorithm finds optimal hacking position |
 
 ## 📋 Full Changelog
+
+### 2026-02-04: Supply Center Expansion v2
+| Fix | Description |
+|-----|-------------|
+| **FIX #17** | Supply Center Expansion with Pathfinding |
+| **Pathfinding** | `findGroundPath()` for real walking distance |
+| **Dozer Protection** | `findDozer()` override excludes expansion dozer |
+| **Completion Detection** | Checks if supply center exists, then releases dozer |
+| **Supply Trucks** | Minimum 2 trucks per Supply Center |
 
 ### 2026-01-07: Initial Stability
 | Fix | Description |
@@ -109,4 +128,4 @@ Output: `Output\ZeroHour\generalszh.exe`
 - **Original Game:** EA Pacific
 
 ---
-*Tested on Windows 10/11. Last updated: 2026-02-02*
+*Tested on Windows 10/11. Last updated: 2026-02-04*

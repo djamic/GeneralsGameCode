@@ -31,6 +31,8 @@
 #include "GameLogic/AIPlayer.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
+#include "GameLogic/Module/DozerAIUpdate.h"       // For DozerAIInterface
+#include "GameLogic/Module/SupplyTruckAIUpdate.h" // For SupplyTruckAIInterface
 #include "GameLogic/Object.h"
 #include "GameLogic/ScriptEngine.h"
 #include "GameLogic/SidesList.h"
@@ -42,10 +44,11 @@
 #include "GameClient/ControlBar.h"
 #include "GameLogic/Module/ContainModule.h"    // For Internet Center contain
 #include "GameLogic/Module/ProductionUpdate.h" // For hacker production
-#include "GameLogic/TerrainLogic.h"            // For Waypoint class
-#include <algorithm>                           // For std::sort
-#include <new>                                 // For placement new
-#include <vector>                              // For capture system
+#include "GameLogic/PartitionManager.h" // For PartitionFilter (Supply Expansion)
+#include "GameLogic/TerrainLogic.h"     // For Waypoint class
+#include <algorithm>                    // For std::sort
+#include <new>                          // For placement new
+#include <vector>                       // For capture system
 
 AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   DjLog("AICoopPlayer created for player %d (%ls) Side: %s",
@@ -68,6 +71,13 @@ AICoopPlayer::AICoopPlayer(Player *p) : AISkirmishPlayer(p) {
   // Initialize Tech Building Capture System (2026-01-29)
   m_lastCaptureCheckFrame = 0;
   // m_buildingToSoldier map is auto-initialized empty
+
+  // Initialize Supply Center Expansion System (2026-02-03)
+  m_expansionDozerID = INVALID_ID;
+  m_targetSupplyWarehouseID = INVALID_ID;
+  m_lastExpansionCheckFrame = 0;
+  m_expansionDozerRequested = FALSE;
+  // m_claimedSupplySources set is auto-initialized empty
 
   // Clear combat optimization log
   FILE *f = fopen("d:\\djcc_combat.txt", "w");
@@ -302,6 +312,9 @@ void AICoopPlayer::assistHumanPlayer() {
   autoManageHackers();
   // 4f. Tech Building Capture (NEW - 2026-01-28)
   autoCaptureTechBuildings();
+  // 4g. Supply Center Expansion (NEW - 2026-02-03)
+  produceExpansionDozer(); // Produce dedicated dozer for expansion
+  autoExpandSupplyNetwork();
 
   // 5. Unit Production and Team Management
   // This drives the AI's ability to build units using the Skirmish Teams loaded
@@ -2838,4 +2851,818 @@ void AICoopPlayer::monitorCaptureProgress() {
             sID, bID, dist);
     }
   }
+}
+
+//=============================================================================
+// Supply Center Expansion System (2026-02-03)
+// Automatically finds safe resource locations and sends dozers to build
+//=============================================================================
+
+// Constants for expansion logic
+static const Real EXPANSION_MIN_MONEY = 1500.0f; // Minimum $1500 to expand
+static const Real EXPANSION_MAX_DIST_FROM_BASE =
+    100000.0f; // Max distance from base (very large - entire map)
+static const Real EXPANSION_MIN_DIST_FROM_ENEMY =
+    400.0f; // Min distance from enemy (decreased)
+static const Real EXPANSION_PATH_CHECK_INTERVAL =
+    150.0f; // Check every 150 units
+static const Real EXPANSION_PATH_THREAT_RADIUS =
+    300.0f; // Threat detection radius
+static const Real SUPPLY_CENTER_CLAIM_RADIUS = 300.0f; // Already claimed radius
+
+// Weights for scoring
+static const Real W_BASE_PROXIMITY =
+    4.0f; // Closer to base = MUCH better (highest priority)
+static const Real W_ENEMY_DISTANCE =
+    1.5f; // Further from enemy = better (secondary)
+static const Real W_RESOURCE_VALUE = 0.5f; // More resources = better
+
+void AICoopPlayer::autoExpandSupplyNetwork() {
+  UnsignedInt currentFrame = TheGameLogic->getFrame();
+
+  // Log entry every 30 seconds to confirm function is being called
+  if (currentFrame % 900 == 0) {
+    DjLog("AICoopPlayer: [EXPAND] Function called at frame %d", currentFrame);
+  }
+
+  // Check every 5 seconds (150 frames)
+  if (currentFrame - m_lastExpansionCheckFrame < 150) {
+    return;
+  }
+  m_lastExpansionCheckFrame = currentFrame;
+
+  // 1. Check if we're already expanding
+  Object *dozer = NULL;
+  Object *supplySource = NULL;
+  Bool continueExpansion = FALSE;
+  Coord3D baseCenter;
+
+  if (m_expansionDozerID != INVALID_ID) {
+    Object *potentialDozer = TheGameLogic->findObjectByID(m_expansionDozerID);
+    if (potentialDozer && !potentialDozer->isEffectivelyDead()) {
+      AIUpdateInterface *ai = potentialDozer->getAIUpdateInterface();
+      if (ai) {
+        if (!ai->isIdle()) {
+          // Still working (moving or building), just wait
+          return;
+        }
+
+        // Dozer is IDLE. Check if we arrived at target.
+        if (m_targetSupplyWarehouseID != INVALID_ID) {
+          Object *target =
+              TheGameLogic->findObjectByID(m_targetSupplyWarehouseID);
+          if (target) {
+            Coord3D diff = *potentialDozer->getPosition();
+            diff.sub(target->getPosition());
+            Real dist = diff.length();
+            if (dist < 300.0f) {
+              // Dozer is near target - but did we already build a supply
+              // center? Check if a supply center exists near the target
+              const Coord3D *targetPos = target->getPosition();
+              PartitionFilterAcceptByKindOf f1(
+                  MAKE_KINDOF_MASK(KINDOF_CASH_GENERATOR), KINDOFMASK_NONE);
+              PartitionFilterPlayer f2(m_player, true);
+              PartitionFilter *filters[] = {&f1, &f2, NULL};
+
+              Object *existingCenter = ThePartitionManager->getClosestObject(
+                  targetPos, SUPPLY_CENTER_CLAIM_RADIUS, FROM_BOUNDINGSPHERE_2D,
+                  filters);
+
+              if (existingCenter) {
+                // SUCCESS! Supply center already built. Release the dozer.
+                DjLog("AICoopPlayer: Expansion COMPLETE! Supply center [%d] "
+                      "exists near target. Releasing dozer [%d]",
+                      existingCenter->getID(), potentialDozer->getID());
+                m_expansionDozerID = INVALID_ID;
+                m_targetSupplyWarehouseID = INVALID_ID;
+                // Dozer is now free for other tasks
+                return;
+              }
+
+              // No supply center yet - continue to Phase 2 (build)
+              DjLog("AICoopPlayer: Expansion Dozer [%d] arrived at Supply [%d] "
+                    "but is idle - Attempting build",
+                    potentialDozer->getID(), target->getID());
+              dozer = potentialDozer;
+              supplySource = target;
+              continueExpansion = TRUE;
+            }
+          }
+        }
+      }
+    }
+
+    if (!continueExpansion) {
+      // Dozer died, lost target, or idle far away - reset
+      m_expansionDozerID = INVALID_ID;
+      m_targetSupplyWarehouseID = INVALID_ID;
+      DjLog("AICoopPlayer: Expansion dozer task reset");
+    }
+  }
+
+  // 2. Check money threshold
+  if (!continueExpansion) {
+    Int currentMoney = m_player->getMoney()->countMoney();
+    if (currentMoney < (Int)EXPANSION_MIN_MONEY) {
+      // Log once every 30 seconds
+      if (currentFrame % 900 == 0) {
+        DjLog("AICoopPlayer: Expansion waiting - Money %d < %d required",
+              currentMoney, (Int)EXPANSION_MIN_MONEY);
+      }
+      return; // Not enough money
+    }
+    DjLog("AICoopPlayer: Expansion check - Money OK (%d >= %d)", currentMoney,
+          (Int)EXPANSION_MIN_MONEY);
+  }
+
+  // 3. Find base center (needed for calculations)
+  if (!getBaseCenter(&baseCenter)) {
+    DjLog("AICoopPlayer: Expansion SKIP - No base center found");
+    return;
+  }
+
+  // 4. Find a free dozer (if not continuing)
+  if (!dozer) {
+    dozer = findDozer(&baseCenter);
+    if (!dozer) {
+      DjLog("AICoopPlayer: Expansion SKIP - No available dozer");
+      return; // No available dozer
+    }
+  }
+
+  // 5. Find safe supply source (if not continuing)
+  if (!supplySource) {
+    supplySource = findSafeSupplySource();
+    if (!supplySource) {
+      DjLog("AICoopPlayer: Expansion SKIP - No safe supply source found");
+      return; // No safe supply found
+    }
+  }
+
+  // 6. Check path safety (only if new expansion)
+  const Coord3D *targetPos = supplySource->getPosition();
+  if (!targetPos) {
+    return;
+  }
+
+  const Coord3D *dozerPos = dozer->getPosition();
+  if (!dozerPos) {
+    return;
+  }
+
+  if (!continueExpansion) {
+    if (!isPathSafeForDozer(*dozerPos, *targetPos)) {
+      DjLog("AICoopPlayer: Path to supply source [%d] is NOT safe - skipping",
+            supplySource->getID());
+      return;
+    }
+  }
+
+  // 6. Find the correct Supply Center template for this faction
+  AsciiString sideName = m_player->getSide();
+  const ThingTemplate *supplyCenterTmpl = NULL;
+
+  if (strstr(sideName.str(), "America")) {
+    supplyCenterTmpl = TheThingFactory->findTemplate("AmericaSupplyCenter");
+  } else if (strstr(sideName.str(), "China")) {
+    supplyCenterTmpl = TheThingFactory->findTemplate("ChinaSupplyCenter");
+  } else if (strstr(sideName.str(), "GLA")) {
+    supplyCenterTmpl = TheThingFactory->findTemplate("GLASupplyStash");
+  }
+
+  if (!supplyCenterTmpl) {
+    DjLog("AICoopPlayer: Could not find Supply Center template for side %s",
+          sideName.str());
+    return;
+  }
+
+  // 7. Calculate target position near the supply source
+  Coord3D targetBuildPos = *targetPos;
+
+  DjLog("AICoopPlayer: === EXPANSION DEBUG ===");
+  DjLog("AICoopPlayer:   Base Center: (%.1f, %.1f)", baseCenter.x,
+        baseCenter.y);
+  DjLog("AICoopPlayer:   Supply Source [%d] at: (%.1f, %.1f)",
+        supplySource->getID(), targetPos->x, targetPos->y);
+  DjLog("AICoopPlayer:   Dozer [%d] at: (%.1f, %.1f)", dozer->getID(),
+        dozerPos->x, dozerPos->y);
+
+  // Offset towards base (but stay near supply source)
+  Real dx = baseCenter.x - targetPos->x;
+  Real dy = baseCenter.y - targetPos->y;
+  Real dist = sqrt(dx * dx + dy * dy);
+  if (dist > 0.01f) {
+    Real offsetDist = 100.0f; // Build 100 units towards base from supply
+    targetBuildPos.x += (dx / dist) * offsetDist;
+    targetBuildPos.y += (dy / dist) * offsetDist;
+  }
+
+  if (TheTerrainLogic) {
+    targetBuildPos.z =
+        TheTerrainLogic->getGroundHeight(targetBuildPos.x, targetBuildPos.y);
+  }
+
+  DjLog("AICoopPlayer:   Target Build Pos: (%.1f, %.1f)", targetBuildPos.x,
+        targetBuildPos.y);
+
+  // Calculate distance from dozer to target
+  Real dozerDistToTarget =
+      sqrt((targetBuildPos.x - dozerPos->x) * (targetBuildPos.x - dozerPos->x) +
+           (targetBuildPos.y - dozerPos->y) * (targetBuildPos.y - dozerPos->y));
+
+  DjLog("AICoopPlayer:   Dozer distance to target: %.1f units",
+        dozerDistToTarget);
+
+  // 8. Get dozer AI interface
+  AIUpdateInterface *dozerAI = dozer->getAIUpdateInterface();
+  if (!dozerAI) {
+    DjLog("AICoopPlayer:   ERROR - Dozer has no AI interface!");
+    return;
+  }
+
+  // Two-phase approach:
+  // Phase 1: If dozer is far from target, send it to move there first
+  // Phase 2: If dozer is near target, try to build
+
+  const Real ARRIVAL_DISTANCE =
+      200.0f; // Dozer considered "arrived" if within 200 units
+
+  if (dozerDistToTarget > ARRIVAL_DISTANCE) {
+    // Phase 1: Dozer is far - send it to move to supply source
+    DjLog("AICoopPlayer:   Phase 1 - Dozer far (%.1f > %.1f), sending to "
+          "supply location",
+          dozerDistToTarget, ARRIVAL_DISTANCE);
+
+    dozerAI->aiMoveToPosition(&targetBuildPos, CMD_FROM_AI);
+
+    // Mark as expanding (dozer on the way)
+    m_expansionDozerID = dozer->getID();
+    m_targetSupplyWarehouseID = supplySource->getID();
+    m_claimedSupplySources.insert(supplySource->getID());
+
+    DjLog("AICoopPlayer:   Dozer [%d] moving to supply [%d] at (%.1f, %.1f)",
+          dozer->getID(), supplySource->getID(), targetBuildPos.x,
+          targetBuildPos.y);
+    DjLog("AICoopPlayer: === END DEBUG ===");
+  } else {
+    // Phase 2: Dozer is near - now try to build (shroud should be revealed)
+    DjLog("AICoopPlayer:   Phase 2 - Dozer near (%.1f <= %.1f), attempting "
+          "construction",
+          dozerDistToTarget, ARRIVAL_DISTANCE);
+
+    // Find valid build location near current dozer position
+    Coord3D buildPos = *dozerPos; // Start from dozer's current position
+    Bool foundValidSpot = FALSE;
+
+    if (TheBuildAssistant) {
+      // Try multiple positions around the supply source
+      Real searchRadii[] = {50.0f, 100.0f, 150.0f, 200.0f};
+      for (Int r = 0; r < 4 && !foundValidSpot; r++) {
+        Real radius = searchRadii[r];
+        for (Int angle = 0; angle < 8 && !foundValidSpot; angle++) {
+          Real rad = (Real)angle * 0.785398f; // 45 degree increments
+          Coord3D testPos;
+          testPos.x = targetPos->x + cos(rad) * radius;
+          testPos.y = targetPos->y + sin(rad) * radius;
+          testPos.z =
+              TheTerrainLogic
+                  ? TheTerrainLogic->getGroundHeight(testPos.x, testPos.y)
+                  : 0;
+
+          LegalBuildCode code = TheBuildAssistant->isLocationLegalToBuild(
+              &testPos, supplyCenterTmpl, 0.0f,
+              BuildAssistant::TERRAIN_RESTRICTIONS |
+                  BuildAssistant::NO_OBJECT_OVERLAP,
+              NULL, m_player);
+
+          if (code == LBC_OK) {
+            buildPos = testPos;
+            foundValidSpot = TRUE;
+            DjLog("AICoopPlayer:   Found valid spot at radius %.1f, angle %d: "
+                  "(%.1f, %.1f)",
+                  radius, angle, buildPos.x, buildPos.y);
+          }
+        }
+      }
+    }
+
+    if (!foundValidSpot) {
+      DjLog("AICoopPlayer:   Cannot find valid build location even after "
+            "arrival!");
+      // Reset expansion state
+      m_expansionDozerID = INVALID_ID;
+      m_targetSupplyWarehouseID = INVALID_ID;
+      DjLog("AICoopPlayer: === END DEBUG ===");
+      return;
+    }
+
+    // Use DozerAIInterface::construct() to directly command the dozer to build
+    DozerAIInterface *dozerInterface = dozerAI->getDozerAIInterface();
+    if (dozerInterface) {
+      DjLog("AICoopPlayer:   Using DozerAIInterface::construct() for direct "
+            "build command");
+      Object *constructedBldg = dozerInterface->construct(
+          supplyCenterTmpl, &buildPos, 0.0f, m_player, FALSE);
+
+      if (constructedBldg) {
+        DjLog("AICoopPlayer:   SUCCESS! Building %s [%d] at (%.1f, %.1f)",
+              supplyCenterTmpl->getName().str(), constructedBldg->getID(),
+              buildPos.x, buildPos.y);
+
+        // Mark as expanding
+        m_expansionDozerID = dozer->getID();
+        m_targetSupplyWarehouseID = supplySource->getID();
+        m_claimedSupplySources.insert(supplySource->getID());
+      } else {
+        DjLog("AICoopPlayer:   FAILED - construct() returned NULL");
+        // Reset expansion state so we can try again
+        m_expansionDozerID = INVALID_ID;
+        m_targetSupplyWarehouseID = INVALID_ID;
+      }
+    } else {
+      DjLog("AICoopPlayer:   ERROR - No DozerAIInterface available!");
+      // Fallback: Add to build list (less reliable)
+      m_player->addToPriorityBuildList(supplyCenterTmpl->getName(), &buildPos,
+                                       0.0f);
+      m_expansionDozerID = dozer->getID();
+      m_targetSupplyWarehouseID = supplySource->getID();
+      m_claimedSupplySources.insert(supplySource->getID());
+      DjLog("AICoopPlayer:   Fallback: Added to priority build list");
+    }
+
+    DjLog("AICoopPlayer: === END DEBUG ===");
+  }
+}
+
+Object *AICoopPlayer::findSafeSupplySource() {
+  Coord3D baseCenter;
+  if (!getBaseCenter(&baseCenter)) {
+    return NULL;
+  }
+
+  // Get enemy position
+  Coord3D enemyPos;
+  getEnemyBaseCenter(&enemyPos);
+
+  DjLog("AICoopPlayer: Scanning for supply sources...");
+  DjLog("AICoopPlayer:   My Base: (%.1f, %.1f)", baseCenter.x, baseCenter.y);
+  DjLog("AICoopPlayer:   Enemy Base: (%.1f, %.1f)", enemyPos.x, enemyPos.y);
+
+  Object *bestSource = NULL;
+  Real bestScore = -99999.0f;
+  Int totalSources = 0;
+  Int validSources = 0;
+
+  // Iterate all objects to find supply warehouses
+  for (Object *obj = TheGameLogic->getFirstObject(); obj;
+       obj = obj->getNextObject()) {
+    // Must be a supply source
+    if (!obj->isKindOf(KINDOF_SUPPLY_SOURCE)) {
+      continue;
+    }
+
+    totalSources++;
+
+    // Must not be enemy-owned
+    if (m_player->getRelationship(obj->getTeam()) == ENEMIES) {
+      continue;
+    }
+
+    const Coord3D *sourcePos = obj->getPosition();
+    if (!sourcePos) {
+      continue;
+    }
+
+    // Already claimed by us?
+    if (m_claimedSupplySources.find(obj->getID()) !=
+        m_claimedSupplySources.end()) {
+      DjLog("AICoopPlayer:   Supply [%d] at (%.1f, %.1f) - ALREADY CLAIMED",
+            obj->getID(), sourcePos->x, sourcePos->y);
+      continue;
+    }
+
+    // Check if we already have a supply center near it
+    PartitionFilterAcceptByKindOf f1(MAKE_KINDOF_MASK(KINDOF_CASH_GENERATOR),
+                                     KINDOFMASK_NONE);
+    PartitionFilterPlayer f2(m_player, true);
+    PartitionFilter *filters[] = {&f1, &f2, NULL};
+
+    Object *existingCenter = ThePartitionManager->getClosestObject(
+        sourcePos, SUPPLY_CENTER_CLAIM_RADIUS, FROM_BOUNDINGSPHERE_2D, filters);
+    if (existingCenter) {
+      DjLog("AICoopPlayer:   Supply [%d] at (%.1f, %.1f) - HAS EXISTING CENTER",
+            obj->getID(), sourcePos->x, sourcePos->y);
+      continue; // Already have one here
+    }
+
+    // Calculate score
+    Real score = evaluateSupplyLocation(obj, enemyPos);
+
+    // Distance checks
+    Real dxBase = sourcePos->x - baseCenter.x;
+    Real dyBase = sourcePos->y - baseCenter.y;
+    Real distToBase = sqrt(dxBase * dxBase + dyBase * dyBase);
+
+    Real dxEnemy = sourcePos->x - enemyPos.x;
+    Real dyEnemy = sourcePos->y - enemyPos.y;
+    Real distToEnemy = sqrt(dxEnemy * dxEnemy + dyEnemy * dyEnemy);
+
+    // Enforce hard limits
+    if (distToBase > EXPANSION_MAX_DIST_FROM_BASE) {
+      DjLog("AICoopPlayer:   Supply [%d] at (%.1f, %.1f) - TOO FAR FROM BASE "
+            "(%.1f > %.1f)",
+            obj->getID(), sourcePos->x, sourcePos->y, distToBase,
+            EXPANSION_MAX_DIST_FROM_BASE);
+      continue; // Too far from base
+    }
+    if (distToEnemy < EXPANSION_MIN_DIST_FROM_ENEMY) {
+      DjLog("AICoopPlayer:   Supply [%d] at (%.1f, %.1f) - TOO CLOSE TO ENEMY "
+            "(%.1f < %.1f)",
+            obj->getID(), sourcePos->x, sourcePos->y, distToEnemy,
+            EXPANSION_MIN_DIST_FROM_ENEMY);
+      continue; // Too close to enemy
+    }
+
+    validSources++;
+    DjLog("AICoopPlayer:   Supply [%d] at (%.1f, %.1f) - VALID! Score=%.1f "
+          "DistBase=%.1f DistEnemy=%.1f",
+          obj->getID(), sourcePos->x, sourcePos->y, score, distToBase,
+          distToEnemy);
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestSource = obj;
+    }
+  }
+
+  DjLog("AICoopPlayer: Found %d total supplies, %d valid for expansion",
+        totalSources, validSources);
+
+  if (bestSource) {
+    const Coord3D *pos = bestSource->getPosition();
+    DjLog("AICoopPlayer: BEST Supply [%d] at (%.1f, %.1f) with score %.2f",
+          bestSource->getID(), pos->x, pos->y, bestScore);
+  }
+
+  return bestSource;
+}
+
+Real AICoopPlayer::evaluateSupplyLocation(Object *supplyWarehouse,
+                                          const Coord3D &enemyPos) {
+  if (!supplyWarehouse) {
+    return -99999.0f;
+  }
+
+  const Coord3D *sourcePos = supplyWarehouse->getPosition();
+  if (!sourcePos) {
+    return -99999.0f;
+  }
+
+  Coord3D baseCenter;
+  if (!getBaseCenter(&baseCenter)) {
+    return -99999.0f;
+  }
+
+  // 1. Base proximity score (closer = higher) - USE PATHFINDING!
+  Real distToBase = 0.0f;
+
+  // Try to calculate actual walking distance using pathfinder
+  Path *path =
+      TheAI->pathfinder()->findGroundPath(&baseCenter, sourcePos, 0, false);
+  if (path) {
+    distToBase = calculatePathLength(path);
+    deleteInstance(path); // Release path memory
+    DjLog("AICoopPlayer: Supply [%d] path distance to base: %.1f",
+          supplyWarehouse->getID(), distToBase);
+  } else {
+    // Fallback to Euclidean with penalty (path blocked = less desirable)
+    Real dxBase = sourcePos->x - baseCenter.x;
+    Real dyBase = sourcePos->y - baseCenter.y;
+    distToBase = sqrt(dxBase * dxBase + dyBase * dyBase) * 1.5f; // 50% penalty
+    DjLog("AICoopPlayer: Supply [%d] NO PATH - using Euclidean with penalty: "
+          "%.1f",
+          supplyWarehouse->getID(), distToBase);
+  }
+
+  Real baseScore = (EXPANSION_MAX_DIST_FROM_BASE - distToBase) / 10.0f;
+  if (baseScore < 0)
+    baseScore = 0;
+
+  // 2. Enemy distance score (further = higher)
+  Real dxEnemy = sourcePos->x - enemyPos.x;
+  Real dyEnemy = sourcePos->y - enemyPos.y;
+  Real distToEnemy = sqrt(dxEnemy * dxEnemy + dyEnemy * dyEnemy);
+  Real enemyScore = distToEnemy / 10.0f;
+
+  // 3. Resource value score (check remaining boxes)
+  Real resourceScore = 0.0f;
+  static const NameKeyType key_warehouseUpdate =
+      NAMEKEY("SupplyWarehouseDockUpdate");
+  UpdateModule *module = supplyWarehouse->findUpdateModule(key_warehouseUpdate);
+  if (module) {
+    // Cast to get box count (simplified - just give base score)
+    resourceScore = 50.0f; // Base value for having resources
+  }
+
+  // Final weighted score
+  Real totalScore = (W_BASE_PROXIMITY * baseScore) +
+                    (W_ENEMY_DISTANCE * enemyScore) +
+                    (W_RESOURCE_VALUE * resourceScore);
+
+  return totalScore;
+}
+
+Bool AICoopPlayer::isPathSafeForDozer(const Coord3D &start,
+                                      const Coord3D &end) {
+  // Calculate path length
+  Real dx = end.x - start.x;
+  Real dy = end.y - start.y;
+  Real pathLength = sqrt(dx * dx + dy * dy);
+
+  if (pathLength < 1.0f) {
+    return TRUE; // Already at destination
+  }
+
+  // Normalize direction
+  Real dirX = dx / pathLength;
+  Real dirY = dy / pathLength;
+
+  // Check at intervals along the path by scanning all enemy objects
+  Int numChecks = (Int)(pathLength / EXPANSION_PATH_CHECK_INTERVAL) + 1;
+
+  for (Int i = 0; i <= numChecks; i++) {
+    Real t = (Real)i / (Real)numChecks;
+    Coord3D checkPos;
+    checkPos.x = start.x + dirX * pathLength * t;
+    checkPos.y = start.y + dirY * pathLength * t;
+    checkPos.z = 0;
+
+    // Scan all objects for enemies near this point
+    for (Object *obj = TheGameLogic->getFirstObject(); obj;
+         obj = obj->getNextObject()) {
+      // Must be enemy
+      if (m_player->getRelationship(obj->getTeam()) != ENEMIES) {
+        continue;
+      }
+      // Must be combat-capable
+      if (!obj->isKindOf(KINDOF_CAN_ATTACK)) {
+        continue;
+      }
+      // Skip structures (buildings aren't mobile threats)
+      if (obj->isKindOf(KINDOF_STRUCTURE)) {
+        continue;
+      }
+
+      const Coord3D *objPos = obj->getPosition();
+      if (!objPos) {
+        continue;
+      }
+
+      Real distX = objPos->x - checkPos.x;
+      Real distY = objPos->y - checkPos.y;
+      Real distSq = distX * distX + distY * distY;
+
+      if (distSq <
+          EXPANSION_PATH_THREAT_RADIUS * EXPANSION_PATH_THREAT_RADIUS) {
+        DjLog("AICoopPlayer: Path blocked by enemy [%d] at (%.1f, %.1f)",
+              obj->getID(), checkPos.x, checkPos.y);
+        return FALSE;
+      }
+    }
+  }
+
+  // Also check destination with larger radius (500 units)
+  Real destRadius = 500.0f;
+  for (Object *obj = TheGameLogic->getFirstObject(); obj;
+       obj = obj->getNextObject()) {
+    if (m_player->getRelationship(obj->getTeam()) != ENEMIES) {
+      continue;
+    }
+    if (!obj->isKindOf(KINDOF_CAN_ATTACK)) {
+      continue;
+    }
+
+    const Coord3D *objPos = obj->getPosition();
+    if (!objPos) {
+      continue;
+    }
+
+    Real distX = objPos->x - end.x;
+    Real distY = objPos->y - end.y;
+    Real distSq = distX * distX + distY * distY;
+
+    if (distSq < destRadius * destRadius) {
+      DjLog("AICoopPlayer: Destination threatened by enemy [%d]", obj->getID());
+      return FALSE;
+    }
+  }
+
+  return TRUE;
+}
+
+//=============================================================================
+// Produce Expansion Dozer (2026-02-03)
+// At game start, produce a dedicated dozer for supply center expansion
+//=============================================================================
+void AICoopPlayer::produceExpansionDozer() {
+  // Only request once
+  if (m_expansionDozerRequested) {
+    return;
+  }
+
+  // Wait until frame 300 (~10 seconds) to avoid early game chaos
+  UnsignedInt currentFrame = TheGameLogic->getFrame();
+  if (currentFrame < 300) {
+    return;
+  }
+
+  // Find Command Center (War Factory for dozer production)
+  Object *warFactory = NULL;
+  AsciiString sideName = m_player->getSide();
+  DjLog("AICoopPlayer: EXPANSION Dozer - Player side: '%s'", sideName.str());
+
+  // Different templates per faction
+  const char *warFactoryPattern = NULL;
+  const ThingTemplate *dozerTemplate = NULL;
+
+  // First, find an existing dozer owned by this player and use its template
+  for (Object *obj = TheGameLogic->getFirstObject(); obj;
+       obj = obj->getNextObject()) {
+    if (obj->isEffectivelyDead())
+      continue;
+    if (obj->getControllingPlayer() != m_player)
+      continue;
+    if (!obj->isKindOf(KINDOF_DOZER))
+      continue;
+
+    // Found a dozer - use its template
+    dozerTemplate = obj->getTemplate();
+    DjLog("AICoopPlayer: EXPANSION - Found existing dozer template: '%s'",
+          dozerTemplate ? dozerTemplate->getName().str() : "NULL");
+    break;
+  }
+
+  // Find war factory pattern based on side
+  if (strstr(sideName.str(), "China") != NULL) {
+    warFactoryPattern =
+        "WarFactory"; // Generic pattern works for all China factions
+  } else if (strstr(sideName.str(), "America") != NULL) {
+    warFactoryPattern = "WarFactory";
+  } else if (strstr(sideName.str(), "GLA") != NULL) {
+    warFactoryPattern = "ArmsDealer";
+  } else {
+    warFactoryPattern = "WarFactory"; // Default
+  }
+
+  // Find the war factory
+  for (Object *obj = TheGameLogic->getFirstObject(); obj;
+       obj = obj->getNextObject()) {
+    if (obj->isEffectivelyDead())
+      continue;
+    if (obj->getControllingPlayer() != m_player)
+      continue;
+
+    const ThingTemplate *tmpl = obj->getTemplate();
+    if (!tmpl)
+      continue;
+
+    if (strstr(tmpl->getName().str(), warFactoryPattern)) {
+      warFactory = obj;
+      break;
+    }
+  }
+
+  if (!warFactory) {
+    // War factory not built yet, retry later
+    return;
+  }
+
+  // Check if war factory is ready (not under construction)
+  if (warFactory->testStatus(OBJECT_STATUS_UNDER_CONSTRUCTION)) {
+    return;
+  }
+
+  // Get production interface
+  ProductionUpdateInterface *prod = warFactory->getProductionUpdateInterface();
+  if (!prod) {
+    return;
+  }
+
+  // Check if already producing
+  if (prod->getProductionCount() > 0) {
+    return;
+  }
+
+  // Check money (dozer costs around $1000)
+  Int currentMoney = m_player->getMoney()->countMoney();
+  if (currentMoney < 1000) {
+    return;
+  }
+
+  // dozerTemplate was found earlier from existing player dozer
+  if (!dozerTemplate) {
+    DjLog("AICoopPlayer: EXPANSION - No dozer template found (no existing "
+          "dozers)");
+    return;
+  }
+
+  // Check if we can queue this unit
+  CanMakeType canMake = prod->canQueueCreateUnit(dozerTemplate);
+  if (canMake != CANMAKE_OK) {
+    // Can't make this unit yet (maybe prereqs missing)
+    return;
+  }
+
+  // Request unique production ID and queue
+  ProductionID prodID = prod->requestUniqueUnitID();
+  Bool success = prod->queueCreateUnit(dozerTemplate, prodID);
+
+  if (success) {
+    DjLog("AICoopPlayer: EXPANSION - Queued dozer production from War Factory "
+          "[%d]",
+          warFactory->getID());
+    m_expansionDozerRequested = TRUE;
+  } else {
+    DjLog("AICoopPlayer: EXPANSION - Failed to queue dozer production");
+  }
+}
+
+/**
+ * Override findDozer to exclude the expansion dozer from base building tasks.
+ * This prevents the expansion dozer from being recalled mid-mission.
+ */
+Object *AICoopPlayer::findDozer(const Coord3D *pos) {
+  // If no expansion dozer assigned, just use parent behavior
+  if (m_expansionDozerID == INVALID_ID) {
+    return AISkirmishPlayer::findDozer(pos);
+  }
+
+  // Get result from parent
+  Object *dozer = AISkirmishPlayer::findDozer(pos);
+
+  // If parent returned the expansion dozer, we need to find another one
+  if (dozer && dozer->getID() == m_expansionDozerID) {
+    DjLog("AICoopPlayer: findDozer - Protecting expansion dozer [%d], "
+          "searching for alternative",
+          m_expansionDozerID);
+
+    // Search for an alternative dozer (not the expansion one)
+    Object *altDozer = NULL;
+    Real closestDistSqr = 99999999.0f;
+
+    for (Object *obj = TheGameLogic->getFirstObject(); obj;
+         obj = obj->getNextObject()) {
+      if (obj->getControllingPlayer() != m_player)
+        continue;
+      if (!obj->isKindOf(KINDOF_DOZER))
+        continue;
+      if (obj->getID() == m_expansionDozerID)
+        continue; // Skip expansion dozer
+
+      AIUpdateInterface *ai = obj->getAIUpdateInterface();
+      if (!ai)
+        continue;
+
+      DozerAIInterface *dozerAI = ai->getDozerAIInterface();
+      if (!dozerAI)
+        continue;
+
+      // Skip busy dozers
+      if (dozerAI->isTaskPending(DOZER_TASK_BUILD))
+        continue;
+
+      // Check if it's ferrying supplies (GLA workers)
+      SupplyTruckAIInterface *supplyAI = ai->getSupplyTruckAIInterface();
+      if (supplyAI && (supplyAI->isCurrentlyFerryingSupplies() ||
+                       supplyAI->isForcedIntoWantingState())) {
+        continue;
+      }
+
+      // Calculate distance
+      const Coord3D *dozerPos = obj->getPosition();
+      if (!dozerPos || !pos)
+        continue;
+
+      Real dx = pos->x - dozerPos->x;
+      Real dy = pos->y - dozerPos->y;
+      Real distSqr = dx * dx + dy * dy;
+
+      if (distSqr < closestDistSqr) {
+        closestDistSqr = distSqr;
+        altDozer = obj;
+      }
+    }
+
+    if (altDozer) {
+      DjLog("AICoopPlayer: findDozer - Found alternative dozer [%d]",
+            altDozer->getID());
+      return altDozer;
+    } else {
+      DjLog("AICoopPlayer: findDozer - No alternative dozer, returning NULL "
+            "(will queue new)");
+      return NULL; // No alternative found, parent will queue a new dozer
+    }
+  }
+
+  return dozer;
 }

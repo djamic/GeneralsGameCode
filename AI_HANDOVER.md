@@ -4,8 +4,9 @@
 **Command & Conquer: Generals Zero Hour** o'yini uchun modifikatsiya qilingan dvigatel (`GeneralsMD`) ustida ishlash.
 **Asosiy vazifa:** `AICoopPlayer` ni (Human Assist AI) tuzatish va ishga tushirish. Bu AI inson o'yinchiga yordamchi sifatida bazani qurish va qo'shin tayyorlashni o'z zimmasiga oladi.
 
-## ✅ Hozirgi Holat (2026-01-07)
-**Status:** Barqaror (Stable). Asosiy "Game Breaking" xatolar tuzatildi.
+## ✅ Hozirgi Holat (2026-02-04)
+**Status:** Barqaror (Stable). Supply Center Expansion System v2 with Pathfinding implemented.
+**Latest Update:** Feature #17 (Safe Supply Center Expansion v2 - Pathfinding, Dozer Protection, Completion Detection).
 
 ### Hal Qilingan Asosiy Muammolar:
 1.  **Infinite Build Loop (Cheksiz Qurilish):**
@@ -34,6 +35,15 @@
     *   **Yechim:** `AICoopPlayer::autoManageCombatTeams` funksiyasi qo'shildi.
     *   **Mexanizm:** Har 0.5 soniyada (15 frame) har bir jamoaning "vakili" atrofida (250 radius) dushman qidiriladi. Agar dushman topilsa, butun jamoaga `Attack` buyrug'i beriladi.
     *   **Xususiyat:** Bu faqat `AICoopPlayer` ichida ishlaydi, shuning uchun asosiy o'yin mexanizmi (`Team.cpp`) buzilmaydi. (Implemented 2026-01-18).
+7.  **Safe Supply Center Expansion System (Xavfsiz Ta'minot Markazlarini Kengaytirish):**
+    *   **Maqsad:** AI avtomatik ravishda bazadan uzoqroq, lekin dushmandan xavfsiz joylarga Supply Center quradi.
+    *   **Mexanizm:** `AICoopPlayer::autoExpandSupplyNetwork` funksiyasi har 5 soniyada (150 frame) ishga tushadi.
+    *   **Funksiyalar:**
+        *   `findSafeSupplySource()`: Eng yaxshi Supply Warehouse ni topish (weighted scoring).
+        *   `evaluateSupplyLocation()`: Bazaga yaqinlik, dushmandan masofa, resurs qiymati bo'yicha ball hisoblash.
+        *   `isPathSafeForDozer()`: Dozerning yo'lida dushman borligini tekshirish.
+    *   **Parametrlar:** Minimal $2000, bazadan max 3000, dushmandan min 1000 masofa.
+    *   **Natija:** AI iqtisodiy jihatdan kengayadi va ko'proq resurs oladi. (Implemented 2026-02-03).
 
 
 
@@ -603,3 +613,201 @@ DjLog("AICoopPlayer: DIAG Soldier[%d] IS_USING_ABILITY=%d Goal=%s", sID,
 ---
 
 **Handover Status:** UPDATED for 2026-02-02. CRITICAL FIX: Resolved capture restart infinite cycle by removing ALL interfering commands (MONITOR re-issue, STALLED aiEnter, SHROUD aiMoveToPosition). Now ONLY INITIAL ASSIGN issues capture command, SpecialAbilityUpdate handles the rest. (Signed off by Antigravity, 2026-02-02).
+
+---
+
+## ✅ FIX #17: Safe Supply Center Expansion System v2 (2026-02-04)
+
+**Maqsad:** AI avtomatik ravishda bazadan uzoqroq, lekin dushmandan xavfsiz joylarga Supply Center quradi va iqtisodiy jihatdan kengayadi.
+
+### Asosiy Funksiyalar
+
+| Funksiya | Vazifasi |
+|----------|----------|
+| `autoExpandSupplyNetwork()` | Har 5 soniyada (150 frame) expansion jarayonini boshqaradi |
+| `findSafeSupplySource()` | Eng yaxshi Supply Warehouse ni topish (weighted scoring + pathfinding) |
+| `evaluateSupplyLocation()` | **PATHFINDING** asosida masofani hisoblash va ball berish |
+| `isPathSafeForDozer()` | Dozerning yo'lida dushman borligini tekshirish |
+| `produceExpansionDozer()` | O'yin boshida ikkinchi dozer chiqarish |
+| `findDozer()` | **OVERRIDE** - expansion dozerni boshqa ishlardan himoyalash |
+
+### Member Variables
+
+| O'zgaruvchi | Vazifasi |
+|-------------|----------|
+| `m_expansionDozerID` | Expansion vazifasidagi dozer ID (himoyalangan) |
+| `m_targetSupplyWarehouseID` | Nishondagi supply source ID |
+| `m_lastExpansionCheckFrame` | Oxirgi tekshiruv framei |
+| `m_claimedSupplySources` | Allaqachon egallangan manbalar (set) |
+| `m_expansionDozerRequested` | Dozer production requested flag |
+
+### Parametrlar (Constants)
+
+| Parametr | Qiymat | Vazifasi |
+|----------|--------|----------|
+| `EXPANSION_MIN_MONEY` | $2000 | Minimal pul threshold |
+| `EXPANSION_MAX_DIST_FROM_BASE` | 3000 unit | Bazadan maksimal masofa |
+| `EXPANSION_MIN_DIST_FROM_ENEMY` | 1000 unit | Dushmandan minimal masofa |
+| `EXPANSION_PATH_THREAT_RADIUS` | 300 unit | Yo'ldagi xavf radiusi |
+| `SUPPLY_CENTER_CLAIM_RADIUS` | 300 unit | Mavjud center uchun tekshirish radiusi |
+
+### Scoring System (Weighted)
+
+| Weight | Nom | Qiymat | Vazifasi |
+|--------|-----|--------|----------|
+| `W_BASE_PROXIMITY` | Bazaga yaqinlik | **4.0** | Eng yuqori prioritet! |
+| `W_ENEMY_DISTANCE` | Dushmandan uzoqlik | 1.5 | Ikkilamchi |
+| `W_RESOURCE_VALUE` | Resurs qiymati | 0.5 | Uchinchi |
+
+**Formula:**
+```
+Score = (4.0 × baseScore) + (1.5 × enemyScore) + (0.5 × resourceScore)
+```
+
+### MUHIM #1: Pathfinding-Based Distance (2026-02-04)
+
+**Avval:** Evklid masofasi (to'g'ri chiziq) - tog'/suv hisoblanmagan edi.
+
+**Hozir:** `TheAI->pathfinder()->findGroundPath()` - haqiqiy yurish masofasi!
+
+```cpp
+// evaluateSupplyLocation() ichida:
+Path *path = TheAI->pathfinder()->findGroundPath(&baseCenter, sourcePos, 0, false);
+if (path) {
+    distToBase = calculatePathLength(path);  // Haqiqiy yo'l uzunligi
+    deleteInstance(path);  // Memory free
+} else {
+    // Fallback: Evklid + 50% penalty
+    distToBase = euclideanDist * 1.5f;
+}
+```
+
+**Afzallik:** Tog' ortidagi yaqin ko'ringan manba uzoqroq deb hisoblanadi.
+
+### MUHIM #2: Dozer Protection (2026-02-04)
+
+**Muammo:** Base building logikasi expansion dozerni "o'g'irlab" olib, orqaga chaqirardi.
+
+**Yechim:** `AICoopPlayer::findDozer()` override:
+
+```cpp
+Object *AICoopPlayer::findDozer(const Coord3D *pos) {
+    if (m_expansionDozerID == INVALID_ID) {
+        return AISkirmishPlayer::findDozer(pos);  // Normal behavior
+    }
+    
+    Object *dozer = AISkirmishPlayer::findDozer(pos);
+    
+    // Agar parent expansion dozerni qaytarsa - alternativ qidir
+    if (dozer && dozer->getID() == m_expansionDozerID) {
+        DjLog("Protecting expansion dozer, searching for alternative");
+        // Boshqa dozer qidir yoki NULL qaytar (yangi dozer chiqarish uchun)
+        return findAlternativeDozer();
+    }
+    
+    return dozer;
+}
+```
+
+**Natija:** Expansion dozer vazifani tugatmaguncha himoyalangan.
+
+### MUHIM #3: Completion Detection (2026-02-04)
+
+**Muammo:** Qurilish tugagandan keyin dozer himoyada qolib ketardi (cheksiz loop).
+
+**Yechim:** Supply center mavjudligini tekshirish:
+
+```cpp
+// autoExpandSupplyNetwork() ichida (dozer idle + supply yaqinida):
+Object *existingCenter = ThePartitionManager->getClosestObject(
+    targetPos, SUPPLY_CENTER_CLAIM_RADIUS, FROM_BOUNDINGSPHERE_2D, filters);
+
+if (existingCenter) {
+    // SUCCESS! Expansion complete.
+    DjLog("Expansion COMPLETE! Supply center exists. Releasing dozer.");
+    m_expansionDozerID = INVALID_ID;  // Dozerni ozod qil
+    m_targetSupplyWarehouseID = INVALID_ID;
+    return;
+}
+```
+
+**Natija:** Qurilish tugagach dozer boshqa ishlar uchun mavjud.
+
+### Two-Phase Expansion Flow
+
+```
+PHASE 1: YO'LGA CHIQISH
+    ↓
+findSafeSupplySource() → Eng yaxshi manbani top (pathfinding)
+    ↓
+isPathSafeForDozer() → Yo'l xavfsizmi?
+    ↓
+ai->aiMoveToPosition(targetPos) → Dozerni yubor
+    ↓
+m_expansionDozerID = dozer->getID() → Himoyala
+
+PHASE 2: QURILISH
+    ↓
+Dozer idle + supply yaqinida?
+    ↓
+Supply center allaqachon bormi?
+  ↓ HA → COMPLETE! Dozerni ozod qil
+  ↓ YO'Q → isLocationLegalToBuild() → Joy top
+    ↓
+DozerAIInterface::construct() → Qur!
+    ↓
+m_claimedSupplySources.insert(ID) → Manba claimed
+```
+
+### Required Includes
+
+```cpp
+#include "GameLogic/AI.h"           // TheAI, pathfinder
+#include "GameLogic/AIPathfind.h"   // Path, PathNode
+#include "GameLogic/Module/DozerAIUpdate.h"      // DozerAIInterface
+#include "GameLogic/Module/SupplyTruckAIUpdate.h" // SupplyTruckAIInterface
+```
+
+### Debug Logs
+
+| Log | Ma'nosi |
+|-----|---------|
+| `Supply [ID] path distance to base: XXX` | Pathfinding masofasi |
+| `Supply [ID] NO PATH - using Euclidean` | Yo'l topilmadi, fallback |
+| `Protecting expansion dozer, searching for alternative` | Dozer himoya qilinmoqda |
+| `Expansion COMPLETE! Supply center exists` | Muvaffaqiyatli tugatildi |
+
+### Known Limitations
+
+1. **Bir vaqtda faqat bitta expansion:** `m_expansionDozerID` bitta dozer track qiladi
+2. **Pathfinding sekin:** Har bir manba uchun path hisoblash - ko'p manbada sekin
+3. **Shroud muammosi:** Fog of War ichidagi manbalar tan olinmasligi mumkin
+
+### Tegishli Fayllar
+
+| Fayl | O'zgarish |
+|------|-----------|
+| `AICoopPlayer.h` | Member variables, `findDozer()` override deklaratsiyasi |
+| `AICoopPlayer.cpp:2877-3180` | Main expansion logic |
+| `AICoopPlayer.cpp:3286-3345` | `evaluateSupplyLocation()` with pathfinding |
+| `AICoopPlayer.cpp:3566-3645` | `findDozer()` override implementation |
+
+---
+
+## 📊 Supply Truck Production Update (2026-02-04)
+
+**Muammo:** AI har bir Supply Center uchun faqat 1 ta supply truck chiqarardi.
+
+**Yechim:** `AIPlayer::queueSupplyTruck()` da minimal 2 ta truck majbur qilindi:
+
+```cpp
+// AIPlayer.cpp, queueSupplyTruck() ichida:
+Int desiredGatherers = info->getDesiredGatherers();
+if (desiredGatherers < 2) desiredGatherers = 2;  // Force minimum 2
+```
+
+**Natija:** Har bir Supply Center kamida 2 ta truck bilan ishlaydi.
+
+---
+
+**Handover Status:** UPDATED for 2026-02-04. MAJOR UPDATE: Supply Center Expansion System v2 with Pathfinding-based distance, Dozer Protection mechanism, and Completion Detection. Also increased supply truck count to minimum 2 per center. (Signed off by Antigravity, 2026-02-04).
